@@ -14,10 +14,23 @@ from tools.validation import validate_output
 
 
 CLARIFYING_QUESTIONS = {
-    "no_income": "To analyze your finances, I need your monthly income. What is your monthly take-home pay?",
-    "no_expenses": "To get started, I need your monthly expenses. What do you typically spend per month?",
-    "generic": "Could you share your monthly income and expenses so I can run the analysis?",
+    "no_income": "Please enter your monthly income and expense breakdown by category.",
+    "no_expenses": "Please enter your monthly expense breakdown by category (category and amount per row).",
+    "generic": "Please enter your monthly income and expense breakdown by category.",
 }
+
+DEFAULT_NOOP_MESSAGE = "I didn't have enough information to proceed."
+
+# Internal planner reasonings that must not be shown to users
+INTERNAL_NOOP_REASONINGS = frozenset({
+    "No matching default",
+    "No user message",
+    "Last turn not user",
+    "No turns",
+    "LLM output invalid or missing",
+    "Unrelated or unclear",
+    "Could not parse delta after retry",
+})
 
 
 def execute(
@@ -98,8 +111,14 @@ def execute(
         )
         last_user = next((t.content for t in reversed(state.turns) if t.role == "user"), "")
         explanation = explain_results(results_str, last_user, api_key)
+        last_run_type = getattr(state, "last_run_type", None)
+        prefix = ""
+        if last_run_type == "scenario":
+            prefix = "This was a scenario comparison (what-if), not your baseline. "
+        elif last_run_type == "baseline":
+            prefix = "This was your baseline analysis. "
         return {
-            "assistant_message": _safe_validate(explanation),
+            "assistant_message": _safe_validate(prefix + explanation),
             "run_id": state.last_run_id,
             "analysis": [
                 {"dimension": r["dimension"], "risk_level": r.get("severity"), "reason": r.get("reason", "")}
@@ -110,10 +129,15 @@ def execute(
             "action": "explain_previous",
             "message_type": "assistant",
             "ui_blocks": [],
+            "last_run_type": last_run_type,
         }
 
-    # noop: no generic help text; use planner reasoning or minimal message
-    noop_msg = (action.reasoning and action.reasoning.strip()) or "I didn't understand that request."
+    # noop: never expose internal reasonings; always return a user-safe message
+    raw = (action.reasoning or "").strip()
+    if raw and raw not in INTERNAL_NOOP_REASONINGS:
+        noop_msg = raw
+    else:
+        noop_msg = DEFAULT_NOOP_MESSAGE
     return {
         "assistant_message": noop_msg,
         "run_id": state.last_run_id,
@@ -134,8 +158,8 @@ def _execute_compare_scenarios(
     api_key: str | None,
     trace: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Clone baseline, apply delta, run tools, produce diff-aware explanation."""
-    baseline_input = state.last_input_snapshot or input_data
+    """Apply delta to immutable baseline only; never use previous scenario as input."""
+    baseline_input = state.baseline_input or state.last_input_snapshot or input_data
     if not baseline_input or _input_incomplete(baseline_input):
         return {
             "assistant_message": "I need your baseline financial data first. Please share income and expenses.",
@@ -149,8 +173,54 @@ def _execute_compare_scenarios(
         }
 
     params = action.parameters or {}
+    deltas_data = params.get("deltas")
     delta_data = params.get("delta")
-    if not delta_data:
+
+    # Multi-delta path (expense deltas only)
+    if deltas_data and isinstance(deltas_data, list) and len(deltas_data) > 0:
+        try:
+            deltas = [ExpenseDelta(**d) for d in deltas_data if isinstance(d, dict) and "monthly_delta" in d]
+        except Exception:
+            deltas = []
+        if not deltas:
+            return {
+                "assistant_message": "I couldn't parse the changes. Please use format: Category +amount per line (e.g. Transport +1500).",
+                "run_id": None,
+                "analysis": [],
+                "education": {},
+                "trace": trace,
+                "action": "compare_scenarios",
+                "message_type": "error",
+                "ui_blocks": [],
+            }
+        ctx_baseline = FinancialContext.from_api_input(baseline_input)
+        ctx_scenario = ctx_baseline.apply_expense_deltas(deltas)
+        scenario_label = ", ".join(f"+ {d.category} {d.monthly_delta:+.0f}/mo" for d in deltas)
+    elif delta_data:
+        try:
+            if "monthly_delta" in delta_data:
+                delta = ExpenseDelta(**delta_data)
+            else:
+                delta = AssetDelta(**delta_data)
+        except Exception:
+            return {
+                "assistant_message": "I couldn't parse the change. Please use format: Category +amount (e.g. Transport +1500).",
+                "run_id": None,
+                "analysis": [],
+                "education": {},
+                "trace": trace,
+                "action": "compare_scenarios",
+                "message_type": "error",
+                "ui_blocks": [],
+            }
+        ctx_baseline = FinancialContext.from_api_input(baseline_input)
+        if isinstance(delta, ExpenseDelta):
+            ctx_scenario = ctx_baseline.apply_expense_delta(delta.category, delta.monthly_delta)
+            scenario_label = f"{delta.category} {delta.monthly_delta:+.0f}/mo"
+        else:
+            ctx_scenario = ctx_baseline.apply_asset_delta(delta.asset_class, delta.allocation_delta_pct)
+            scenario_label = f"{delta.asset_class} {delta.allocation_delta_pct:+.0f}%"
+    else:
         return {
             "assistant_message": "I couldn't determine the change to model. Please specify category and amount.",
             "run_id": None,
@@ -161,31 +231,6 @@ def _execute_compare_scenarios(
             "message_type": "error",
             "ui_blocks": [],
         }
-
-    try:
-        if "monthly_delta" in delta_data:
-            delta = ExpenseDelta(**delta_data)
-        else:
-            delta = AssetDelta(**delta_data)
-    except Exception:
-        return {
-            "assistant_message": "I couldn't parse the change. Please use format: Category +amount (e.g. Transport +1500).",
-            "run_id": None,
-            "analysis": [],
-            "education": {},
-            "trace": trace,
-            "action": "compare_scenarios",
-            "message_type": "error",
-            "ui_blocks": [],
-        }
-
-    ctx_baseline = FinancialContext.from_api_input(baseline_input)
-    if isinstance(delta, ExpenseDelta):
-        ctx_scenario = ctx_baseline.apply_expense_delta(delta.category, delta.monthly_delta)
-        scenario_label = f"{delta.category} {delta.monthly_delta:+.0f}/mo"
-    else:
-        ctx_scenario = ctx_baseline.apply_asset_delta(delta.asset_class, delta.allocation_delta_pct)
-        scenario_label = f"{delta.asset_class} {delta.allocation_delta_pct:+.0f}%"
 
     scenario_input = ctx_scenario.to_api_input()
 
@@ -210,8 +255,9 @@ def _execute_compare_scenarios(
             }
         analysis_with_diff.append(item)
 
+    is_multi_delta = bool(deltas_data and isinstance(deltas_data, list) and len(deltas_data) > 1)
     explanation = _build_scenario_explanation(
-        scenario_label, base_analysis, scenario_analysis, api_key
+        scenario_label, base_analysis, scenario_analysis, api_key, is_multi_delta=is_multi_delta
     )
     ui_blocks = _ui_blocks_for_analysis(
         {"analysis": analysis_with_diff, "education": scenario_result.get("education", {})},
@@ -236,6 +282,7 @@ def _build_scenario_explanation(
     base: Dict[str, Dict],
     scenario: List[Dict],
     api_key: str | None,
+    is_multi_delta: bool = False,
 ) -> str:
     """Build diff-aware explanation for scenario result."""
     changes = []
@@ -245,7 +292,11 @@ def _build_scenario_explanation(
         if base_a and base_a.get("risk_level") != a.get("risk_level"):
             changes.append(f"{dim}: {base_a.get('risk_level')} → {a.get('risk_level')}")
     if changes:
+        if is_multi_delta:
+            return f"Scenario analyzed with changes: {scenario_label}. {'; '.join(changes)}. See analysis below for details."
         return f"With {scenario_label}: {'; '.join(changes)}. See analysis below for details."
+    if is_multi_delta:
+        return f"Scenario analyzed with changes: {scenario_label}. See comparison below."
     return f"Scenario ({scenario_label}) analyzed. See comparison below."
 
 
@@ -296,13 +347,14 @@ def _ui_blocks_for_clarification(
     expected_schema: str,
     input_data: Dict[str, Any] | None,
 ) -> List[Dict[str, Any]]:
-    """Build ui_blocks for clarification: editor when we need financial data."""
+    """Build ui_blocks for clarification: category table or delta table. No guessing."""
     blocks: List[Dict[str, Any]] = []
-    if not input_data or _input_incomplete(input_data):
+    need_initial_categories = expected_schema == "expense_categories" or not input_data or _input_incomplete(input_data)
+    if need_initial_categories:
         blocks.append({
             "type": "editor",
             "editorType": "financial_input",
-            "value": input_data or {},
+            "value": {},  # Always empty so user starts fresh; avoids false aggregation from prior input
         })
     elif expected_schema == "expense_delta":
         blocks.append({
@@ -330,15 +382,28 @@ def _safe_validate(content: str) -> str:
     )
 
 
+def _financial_input_value_for_editor(input_data: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Value for financial_input editor: income, expense_categories, current_savings (category table = source of truth)."""
+    if not input_data:
+        return {}
+    return {
+        "monthly_income": input_data.get("monthly_income"),
+        "monthly_expenses": input_data.get("monthly_expenses"),
+        "expense_categories": input_data.get("expense_categories") or [],
+        "current_savings": input_data.get("current_savings"),
+    }
+
+
 def _input_incomplete(input_data: Dict[str, Any] | None) -> bool:
+    """Category table is source of truth: require income > 0 and non-empty expense_categories."""
     if not input_data:
         return True
     income = input_data.get("monthly_income")
-    expenses = input_data.get("monthly_expenses")
     categories = input_data.get("expense_categories") or []
     has_income = income is not None and float(income or 0) > 0
-    has_expenses = (expenses is not None and float(expenses or 0) >= 0) or len(categories) > 0
-    return not has_income or not has_expenses
+    cat_total = sum(float(c.get("amount", 0) or 0) for c in categories if isinstance(c, dict))
+    has_categories = len(categories) > 0 and cat_total > 0
+    return not has_income or not has_categories
 
 
 def _clarifying_message(input_data: Dict[str, Any] | None) -> str:

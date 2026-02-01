@@ -46,11 +46,12 @@ def chat(
         "context_snapshot": {},
         "turn_index": turn_index,
     }
-    if state.last_input_snapshot:
-        ctx = _context_snapshot_from_input(state.last_input_snapshot)
+    baseline = getattr(state, "baseline_input", None) or state.last_input_snapshot
+    if baseline:
+        ctx = _context_snapshot_from_input(baseline)
         trace["context_before"] = ctx
 
-    action: AgentAction = select_action(state, key if caps.agent else None, trace)
+    action: AgentAction = select_action(state, key if caps.agent else None, trace, input_data)
 
     exec_result = execute(
         action=action,
@@ -71,13 +72,27 @@ def chat(
     if run_id:
         state.last_run_id = run_id
         state.last_analysis_summary = _summary_from_analysis(exec_result.get("analysis", []))
-        state.last_input_snapshot = input_data or state.last_input_snapshot
         state.pending_clarification = None
         state.clarification_attempt = 0
         trace["clarification_attempt"] = 0
-        trace["context_after"] = exec_result.get("context_after") or _context_snapshot_from_input(
-            input_data
-        )
+        # Baseline is set only on run_analysis (user submitted category form); never mutated by compare_scenarios
+        if action.type == "run_analysis":
+            state.baseline_input = input_data or state.baseline_input
+            state.last_input_snapshot = input_data or state.last_input_snapshot
+            state.last_run_type = "baseline"
+            trace["context_after"] = exec_result.get("context_after") or _context_snapshot_from_input(
+                input_data
+            )
+        elif action.type == "compare_scenarios":
+            state.last_run_type = "scenario"
+            # Do NOT update baseline_input or last_input_snapshot; scenario is temporary
+            trace["context_after"] = exec_result.get("context_after")
+        else:
+            state.last_run_type = None
+            state.last_input_snapshot = input_data or state.last_input_snapshot
+            trace["context_after"] = exec_result.get("context_after") or _context_snapshot_from_input(
+                input_data
+            )
     elif action.type == "clarifying_question":
         state.clarification_attempt = getattr(state, "clarification_attempt", 0) + 1
         trace["clarification_attempt"] = state.clarification_attempt

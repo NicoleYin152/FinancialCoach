@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { MessageCircle, Loader2, Send } from "lucide-react";
 import { chatAgent } from "../services/agentApi";
 import type { AgentInput, ChatResponse, UIBlock } from "../services/agentApi";
+import { normalizeCategory } from "../utils/mappings";
 import type { ExpenseCategoryRow } from "./ExpenseCategoryEditor";
 import type { AssetAllocationRow } from "./AssetAllocationEditor";
 import { SavingsGauge } from "./SavingsGauge";
@@ -40,6 +41,31 @@ function getBubbleStyles(messageType?: string) {
   }
 }
 
+/** Build a parseable delta message for the backend (e.g. "Transport +1500" or "Transport +1500\nDining -200"). */
+function buildDeltaMessage(rows: ExpenseCategoryRow[]): string {
+  return rows
+    .filter((r) => r.category?.trim() && !Number.isNaN(Number.parseFloat(r.amount)))
+    .map((r) => {
+      const category = normalizeCategory(r.category);
+      const amount = Number.parseFloat(r.amount) || 0;
+      const sign = amount >= 0 ? "+" : "";
+      return `${category} ${sign}${amount}`;
+    })
+    .join("\n");
+}
+
+/** Build a parseable asset-delta message for the backend (e.g. "Stocks -10" or "Stocks 50 Bonds 50"). */
+function buildAssetDeltaMessage(rows: AssetAllocationRow[]): string {
+  return rows
+    .filter((r) => r.asset_class?.trim() && !Number.isNaN(Number.parseFloat(r.allocation_pct)))
+    .map((r) => {
+      const assetClass = r.asset_class.trim();
+      const pct = Number.parseFloat(r.allocation_pct) || 0;
+      return `${assetClass} ${pct}`;
+    })
+    .join("\n");
+}
+
 function toAgentInputFromValues(
   income: string,
   expenses: string,
@@ -67,7 +93,7 @@ function toAgentInputFromValues(
   if (categories && categories.length > 0) {
     agentInput.expense_categories = categories
       .map((c) => ({
-        category: c.category.trim(),
+        category: normalizeCategory(c.category),
         amount: Number.parseFloat(c.amount) || 0,
       }))
       .filter((c) => c.category && c.amount > 0);
@@ -224,7 +250,7 @@ export function ChatPanel({ disabled = false }: ChatPanelProps) {
     message: string,
     input: AgentInput | null
   ) => {
-    setMessages((prev) => [...prev, { role: "user", type: "text", content: message }]);
+      setMessages((prev) => [...prev, { role: "user", type: "text", content: message }]);
     setLoading(true);
     try {
       const response = await chatAgent({
@@ -234,16 +260,17 @@ export function ChatPanel({ disabled = false }: ChatPanelProps) {
         capabilities: { llm: false, agent: false },
       });
       setConversationId(response.conversation_id);
-      const msgType = (response.message_type ?? "assistant") as
-        | "text"
-        | "clarifying_question"
-        | "scenario_result"
-        | "error";
+      // Never use internal/unknown message_type; treat unknown as plain assistant text
+      const knownTypes = ["clarifying_question", "scenario_result", "error"] as const;
+      const safeMessageType =
+        response.message_type && knownTypes.includes(response.message_type as (typeof knownTypes)[number])
+          ? (response.message_type as "clarifying_question" | "scenario_result" | "error")
+          : "text";
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          type: msgType,
+          type: safeMessageType,
           content: response.assistant_message,
           uiBlocks: response.ui_blocks,
           analysis: response.analysis,
@@ -286,37 +313,54 @@ export function ChatPanel({ disabled = false }: ChatPanelProps) {
     triggerMessage: string
   ) => {
     if (editorType === "financial_input") {
-      const v = value as { monthly_income?: string; monthly_expenses?: string; current_savings?: string };
+      const v = value as {
+        monthly_income?: string;
+        monthly_expenses?: string;
+        expense_categories?: { category: string; amount: number }[];
+        current_savings?: string;
+      };
+      const cats =
+        (v.expense_categories ?? []).map((c) => ({
+          category: normalizeCategory(c.category),
+          amount: String(c.amount),
+        }));
+      const total = cats.reduce(
+        (s, c) => s + (Number.parseFloat(c.amount) || 0),
+        0
+      );
       setContext((prev) => ({
         ...prev,
         income: v.monthly_income ?? prev.income,
-        expenses: v.monthly_expenses ?? prev.expenses,
+        expenses: total > 0 ? String(total) : prev.expenses,
+        categories: cats,
         savings: v.current_savings ?? prev.savings,
       }));
       const input = toAgentInputFromValues(
         v.monthly_income ?? "",
-        v.monthly_expenses ?? "",
-        context.categories,
+        String(total) || "",
+        cats,
         context.allocation,
         v.current_savings
       );
-      sendMessage(triggerMessage, input);
+      sendMessage(triggerMessage || "Please analyze my finances.", input);
     } else if (editorType === "expense_categories") {
       const cats = (value ?? []) as ExpenseCategoryRow[];
       const total = cats.reduce((s, c) => s + (Number.parseFloat(c.amount) || 0), 0);
+      const normalizedCats = cats.map((c) => ({ ...c, category: normalizeCategory(c.category) }));
       setContext((prev) => ({
         ...prev,
-        categories: cats,
+        categories: normalizedCats,
         expenses: total > 0 ? String(total) : prev.expenses,
       }));
       const input = toAgentInputFromValues(
         context.income,
         String(total) || context.expenses,
-        cats,
+        normalizedCats,
         context.allocation,
         context.savings
       );
-      sendMessage("I've updated my expense breakdown. Please analyze.", input);
+      const deltaMessage = buildDeltaMessage(normalizedCats);
+      if (deltaMessage.trim()) sendMessage(deltaMessage, input);
     } else if (editorType === "asset_allocation") {
       const alloc = (value ?? []) as AssetAllocationRow[];
       setContext((prev) => ({ ...prev, allocation: alloc }));
@@ -327,7 +371,8 @@ export function ChatPanel({ disabled = false }: ChatPanelProps) {
         alloc,
         context.savings
       );
-      sendMessage("I've updated my asset allocation. Please analyze.", input);
+      const assetMessage = buildAssetDeltaMessage(alloc);
+      if (assetMessage.trim()) sendMessage(assetMessage, input);
     }
   };
 
@@ -352,12 +397,11 @@ export function ChatPanel({ disabled = false }: ChatPanelProps) {
           {messages.length === 0 && (
             <div className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-700 dark:bg-slate-800">
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                Share your income and expenses, then ask for analysis.
+                Enter your income and expense breakdown by category, then ask for analysis.
               </p>
-              <ul className="mt-4 space-y-2 text-sm text-slate-500">
-                <li>&ldquo;I make $8000 and spend $5500. Analyze my finances.&rdquo;</li>
-                <li>&ldquo;What if I spent $1500 more on Transport?&rdquo;</li>
-              </ul>
+              <p className="mt-2 text-sm text-slate-500">
+                Try: &ldquo;Analyze my finances&rdquo; — you&rsquo;ll be asked for your category table (Category | Amount).
+              </p>
             </div>
           )}
           <AnimatePresence>
@@ -410,16 +454,15 @@ export function ChatPanel({ disabled = false }: ChatPanelProps) {
                             {block.editorType === "expense_categories" && (
                               <ExpenseCategoryEditorWithSubmit
                                 initial={
-                                  (block.value as ExpenseCategoryRow[]) ?? [
+                                  ((block.value as ExpenseCategoryRow[]) ?? [
                                     { category: "", amount: "" },
-                                  ]
+                                  ]).map((r) => ({
+                                    ...r,
+                                    category: r.category ? normalizeCategory(r.category) : r.category,
+                                  }))
                                 }
                                 onSubmit={(cats) =>
-                                  handleEditorSubmit(
-                                    "expense_categories",
-                                    cats,
-                                    "I've updated my expenses. Please analyze."
-                                  )
+                                  handleEditorSubmit("expense_categories", cats, "")
                                 }
                                 disabled={loading}
                               />
@@ -428,11 +471,7 @@ export function ChatPanel({ disabled = false }: ChatPanelProps) {
                               <AssetAllocationEditorWithSubmit
                                 initial={(block.value as AssetAllocationRow[]) ?? []}
                                 onSubmit={(alloc) =>
-                                  handleEditorSubmit(
-                                    "asset_allocation",
-                                    alloc,
-                                    "I've updated my asset allocation. Please analyze."
-                                  )
+                                  handleEditorSubmit("asset_allocation", alloc, "")
                                 }
                                 disabled={loading}
                               />

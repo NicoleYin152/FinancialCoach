@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
 from agent.capabilities import Capabilities
@@ -12,6 +13,14 @@ from agent.memory import RUN_HISTORY, RunMemory
 from agent.orchestrator import run
 
 app = FastAPI(title="Smart Financial Coach API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ExpenseCategory(BaseModel):

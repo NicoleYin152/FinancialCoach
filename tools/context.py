@@ -1,8 +1,10 @@
 """Unified financial context used by all analysis tools."""
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+from agent.schemas.delta import ExpenseDelta
 
 
 class FinancialContext(BaseModel):
@@ -106,10 +108,8 @@ class FinancialContext(BaseModel):
         return data
 
     def apply_expense_delta(self, category: str, monthly_delta: float) -> "FinancialContext":
-        """Clone and apply expense delta. Returns new context."""
+        """Clone and apply expense delta. Returns new context. No implicit Other."""
         cats = dict(self.expense_categories)
-        if not cats and self.total_expenses > 0:
-            cats["Other"] = self.total_expenses
         cats[category] = cats.get(category, 0) + monthly_delta
         cats = {k: v for k, v in cats.items() if v > 0}
         new_expenses = sum(cats.values())
@@ -131,6 +131,13 @@ class FinancialContext(BaseModel):
                 "months_coverage": months,
             },
         )
+
+    def apply_expense_deltas(self, deltas: List[ExpenseDelta]) -> "FinancialContext":
+        """Apply multiple expense deltas cumulatively. Returns new context."""
+        ctx = self
+        for d in deltas:
+            ctx = ctx.apply_expense_delta(d.category, d.monthly_delta)
+        return ctx
 
     def apply_asset_delta(self, asset_class: str, allocation_delta_pct: float) -> "FinancialContext":
         """Clone and apply asset allocation delta. Redistributes to keep 100%."""

@@ -1,7 +1,7 @@
-"""Parse user confirmation into ExpenseDelta or AssetDelta. Schema-bound."""
+"""Parse user confirmation into ExpenseDelta or AssetDelta. Schema-bound. Supports multi-line expense deltas."""
 
 import re
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from agent.schemas.delta import AssetDelta, ExpenseDelta
 
@@ -59,6 +59,21 @@ def parse_expense_delta(text: str) -> Optional[ExpenseDelta]:
     return ExpenseDelta(category=category, monthly_delta=num)
 
 
+def parse_expense_deltas(text: str) -> List[ExpenseDelta]:
+    """
+    Parse multi-line user text into a list of ExpenseDelta.
+    Splits by newline, parses each non-empty line; skips invalid lines.
+    Returns empty list if none valid.
+    """
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    result: List[ExpenseDelta] = []
+    for line in lines:
+        delta = parse_expense_delta(line)
+        if delta is not None:
+            result.append(delta)
+    return result
+
+
 def parse_asset_delta(text: str) -> Optional[AssetDelta]:
     """
     Try to parse user text as AssetDelta.
@@ -98,13 +113,19 @@ def parse_asset_delta(text: str) -> Optional[AssetDelta]:
 def parse_user_confirmation(
     text: str,
     expected_schema: str,
-) -> Optional[Union[ExpenseDelta, AssetDelta]]:
+) -> Optional[Union[ExpenseDelta, AssetDelta, List[ExpenseDelta]]]:
     """
     Parse user reply based on expected_schema.
-    Returns delta if parse succeeds, else None.
+    For expense_delta: returns List[ExpenseDelta] (multi-line) or single ExpenseDelta (one line); empty list → None.
+    For asset_change: returns single AssetDelta or None.
     """
     if expected_schema in ("expense_delta", "category_adjustment"):
-        return parse_expense_delta(text)
+        deltas = parse_expense_deltas(text)
+        if not deltas:
+            return None
+        if len(deltas) == 1:
+            return deltas[0]
+        return deltas
     if expected_schema == "asset_change":
         return parse_asset_delta(text)
     return None

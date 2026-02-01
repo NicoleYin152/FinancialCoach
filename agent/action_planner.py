@@ -39,10 +39,32 @@ def _has_structured_delta(msg: str) -> bool:
     return bool(re.search(r"[\d]+", msg)) and ("+" in msg or "-" in msg or "$" in msg or "%" in msg)
 
 
+def _has_valid_categories(input_data: Dict[str, Any] | None) -> bool:
+    """True if input has monthly_income > 0 and non-empty expense_categories (source of truth)."""
+    if not input_data:
+        return False
+    income = input_data.get("monthly_income")
+    if income is None or float(income or 0) <= 0:
+        return False
+    cats = input_data.get("expense_categories") or []
+    if not cats or not isinstance(cats, list):
+        return False
+    total = sum(float(c.get("amount", 0) or 0) for c in cats if isinstance(c, dict))
+    return total > 0
+
+
+def _wants_analysis(msg: str) -> bool:
+    """User message suggests they want to analyze finances or get started."""
+    m = msg.lower().strip()
+    keywords = ["analyze", "analysis", "finances", "finance", "help", "?", "income", "expense", "spend", "make", "start", "submit", "here", "done"]
+    return any(kw in m for kw in keywords) or len(m) < 3
+
+
 def select_action(
     state: ConversationState,
     api_key: str | None,
     trace: Dict[str, Any],
+    input_data: Dict[str, Any] | None = None,
 ) -> AgentAction:
     """
     Select next action from conversation state. Always returns valid AgentAction.
@@ -63,18 +85,29 @@ def select_action(
         return AgentAction(type="noop", reasoning="Last turn not user", parameters={})
 
     msg = last.content.strip()
+    effective_input = input_data or getattr(state, "baseline_input", None) or state.last_input_snapshot
 
     # Follow-up: we asked clarifying question, await confirmation
     if state.pending_clarification:
-        delta = parse_user_confirmation(msg, state.pending_clarification.expected_schema)
-        if delta is not None:
-            trace["action_planner_status"] = "confirmation_parsed"
-            trace["planner_decision"] = "compare_scenarios"
-            return AgentAction(
-                type="compare_scenarios",
-                reasoning="User confirmed delta",
-                parameters={"delta": delta.model_dump()},
-            )
+        pc = state.pending_clarification
+        if pc.expected_schema == "expense_categories" and _has_valid_categories(input_data):
+            trace["action_planner_status"] = "categories_submitted"
+            trace["planner_decision"] = "run_analysis"
+            return AgentAction(type="run_analysis", reasoning="User submitted category table", parameters={})
+        if pc.expected_schema in ("expense_delta", "category_adjustment", "asset_change"):
+            parsed = parse_user_confirmation(msg, pc.expected_schema)
+            if parsed is not None:
+                trace["action_planner_status"] = "confirmation_parsed"
+                trace["planner_decision"] = "compare_scenarios"
+                if isinstance(parsed, list):
+                    parameters = {"deltas": [d.model_dump() for d in parsed]}
+                else:
+                    parameters = {"delta": parsed.model_dump()}
+                return AgentAction(
+                    type="compare_scenarios",
+                    reasoning="User confirmed delta",
+                    parameters=parameters,
+                )
         if state.pending_clarification.retry_count < 1:
             if clarification_attempt >= 2:
                 trace["action_planner_status"] = "clarification_limit"
@@ -108,7 +141,29 @@ def select_action(
         trace["planner_decision"] = "noop"
         return AgentAction(type="noop", reasoning="Could not parse delta after retry", parameters={})
 
-    # Ambiguous financial intent → clarifying_question (NEVER run tools); cap at 2 attempts
+    # No category table yet and user wants analysis → ask for expense breakdown (no guessing, no run)
+    if not _has_valid_categories(effective_input) and _wants_analysis(msg):
+        if clarification_attempt >= 2:
+            trace["action_planner_status"] = "clarification_limit"
+            trace["planner_decision"] = "noop_due_to_clarification_limit"
+            trace["clarification_attempt"] = 3
+            return AgentAction(
+                type="noop",
+                reasoning="I need your expense breakdown by category to analyze. Please use the category table.",
+                parameters={},
+            )
+        trace["action_planner_status"] = "need_categories"
+        trace["planner_decision"] = "clarifying_question"
+        return AgentAction(
+            type="clarifying_question",
+            reasoning="Category table required before analysis; no guessing",
+            parameters={
+                "question": "Please enter your monthly expense breakdown by category.",
+                "expected_schema": "expense_categories",
+            },
+        )
+
+    # Ambiguous financial intent (e.g. what if I buy a car) → clarifying_question for delta; cap at 2 attempts
     if _has_ambiguous_intent(msg) and not _has_structured_delta(msg):
         if clarification_attempt >= 2:
             trace["action_planner_status"] = "clarification_limit"
@@ -159,7 +214,7 @@ def select_action(
 
     # LLM disabled: deterministic fallback only
     trace["action_planner_status"] = "fallback_no_llm"
-    return _default_action(state, trace)
+    return _default_action(state, trace, input_data)
 
 
 def _build_clarifying_question(msg: str) -> str:
@@ -187,18 +242,19 @@ def _build_planner_prompt(state: ConversationState) -> str:
     )
     has_previous = "Yes" if (state.last_run_id and state.last_analysis_summary) else "No"
     context_summary = "None"
-    if state.last_input_snapshot:
-        inc = state.last_input_snapshot.get("monthly_income")
-        exp = state.last_input_snapshot.get("monthly_expenses")
-        context_summary = f"income={inc}, expenses={exp} (from last run)"
+    snapshot = getattr(state, "baseline_input", None) or state.last_input_snapshot
+    if snapshot:
+        inc = snapshot.get("monthly_income")
+        cats = snapshot.get("expense_categories") or []
+        context_summary = f"income={inc}, categories={len(cats)} (baseline)"
     elif state.turns:
-        context_summary = "User has not yet provided full financial input"
+        context_summary = "User has not yet provided expense breakdown by category"
 
     parts = [
         "You are a financial analysis agent. Your job is to decide the next action.",
         "",
         "Available actions (return exactly one):",
-        "- run_analysis: when user wants to analyze finances (income/expenses given or requested)",
+        "- run_analysis: ONLY when user has already provided income AND expense_categories (category table). Never guess categories.",
         "- explain_previous: when user asks about earlier results (e.g. explain, why, what does that mean)",
         "- compare_scenarios: when user proposes a concrete change with numbers (e.g. Transport +1500)",
         "- clarifying_question: when required data is missing or intent is ambiguous (e.g. 'what if I buy a car' with no numbers)",
@@ -214,8 +270,8 @@ def _build_planner_prompt(state: ConversationState) -> str:
     parts.append("")
     parts.append("You must return valid JSON matching this schema only (no other text):")
     parts.append('{"type": "<one of run_analysis | explain_previous | compare_scenarios | clarifying_question | noop>", "reasoning": "<brief reason>", "parameters": {}}')
-    parts.append("For clarifying_question, set parameters to {\"question\": \"<your question>\", \"expected_schema\": \"expense_delta\"}.")
-    parts.append("NEVER guess deltas. If unclear, use clarifying_question.")
+    parts.append("For clarifying_question, use expected_schema \"expense_categories\" when category table is missing, \"expense_delta\" for scenario deltas.")
+    parts.append("NEVER guess categories or deltas. If unclear, use clarifying_question.")
     parts.append("")
     parts.append("Latest user message:")
     if state.turns:
@@ -232,8 +288,12 @@ def _extract_json(raw: str) -> str:
     return text
 
 
-def _default_action(state: ConversationState, trace: Dict[str, Any]) -> AgentAction:
-    """Deterministic fallback only when LLM is disabled."""
+def _default_action(
+    state: ConversationState,
+    trace: Dict[str, Any],
+    input_data: Dict[str, Any] | None = None,
+) -> AgentAction:
+    """Deterministic fallback only when LLM is disabled. Never run_analysis without category table."""
     if not state.turns:
         return AgentAction(type="noop", reasoning="No turns", parameters={})
 
@@ -242,9 +302,20 @@ def _default_action(state: ConversationState, trace: Dict[str, Any]) -> AgentAct
         return AgentAction(type="noop", reasoning="Last not user", parameters={})
 
     msg = last.content.lower().strip()
+    effective_input = input_data or getattr(state, "baseline_input", None) or state.last_input_snapshot
 
     if not state.last_run_id:
         if any(kw in msg for kw in ["income", "expense", "savings", "analyze", "help", "?", "make", "spend"]):
+            if not _has_valid_categories(effective_input):
+                trace["planner_decision"] = "clarifying_question"
+                return AgentAction(
+                    type="clarifying_question",
+                    reasoning="Category table required before analysis",
+                    parameters={
+                        "question": "Please enter your monthly expense breakdown by category.",
+                        "expected_schema": "expense_categories",
+                    },
+                )
             trace["planner_decision"] = "run_analysis"
             return AgentAction(type="run_analysis", reasoning="Default: run analysis", parameters={})
         if any(kw in msg for kw in ["what if", "compare", "scenario"]) and _has_structured_delta(last.content):

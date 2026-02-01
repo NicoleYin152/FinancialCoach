@@ -57,7 +57,7 @@ def test_replay_endpoint():
 
 
 def test_chat_endpoint():
-    """POST /agent/chat returns conversation_id and assistant_message."""
+    """POST /agent/chat with income+expenses only gets clarifying_question (category table required)."""
     response = client.post(
         "/agent/chat",
         json={
@@ -70,12 +70,40 @@ def test_chat_endpoint():
     data = response.json()
     assert "conversation_id" in data
     assert "assistant_message" in data
+    # Category table is required: no run until expense_categories provided
+    assert data["run_id"] is None
+    assert "category" in data["assistant_message"].lower() or "expense" in data["assistant_message"].lower()
+    assert "trace" in data
+
+
+def test_chat_endpoint_with_categories_runs_analysis():
+    """POST /agent/chat with income + expense_categories runs analysis (category table = source of truth)."""
+    # First turn: ask for analysis with category table
+    response = client.post(
+        "/agent/chat",
+        json={
+            "message": "Please analyze my finances.",
+            "input": {
+                "monthly_income": 8000,
+                "expense_categories": [
+                    {"category": "Housing", "amount": 2500},
+                    {"category": "Food", "amount": 1500},
+                    {"category": "Transport", "amount": 1500},
+                ],
+            },
+            "capabilities": {"llm": False, "agent": False},
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "conversation_id" in data
     assert data["run_id"] is not None
+    assert "assistant_message" in data
     assert "trace" in data
 
 
 def test_chat_endpoint_no_input():
-    """POST /agent/chat without input asks for clarification."""
+    """POST /agent/chat without input asks for category breakdown."""
     response = client.post(
         "/agent/chat",
         json={
@@ -88,7 +116,7 @@ def test_chat_endpoint_no_input():
     assert "conversation_id" in data
     assert "assistant_message" in data
     assert data["run_id"] is None
-    assert "income" in data["assistant_message"].lower() or "expense" in data["assistant_message"].lower()
+    assert "category" in data["assistant_message"].lower() or "expense" in data["assistant_message"].lower()
 
 
 def test_replay_endpoint_404():

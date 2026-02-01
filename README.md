@@ -41,12 +41,6 @@ curl -X POST http://127.0.0.1:8000/agent/run \
 pip install -r requirements.txt
 ```
 
-### Docker
-
-```bash
-docker build -t financial-coach . && docker run -p 8000:8000 financial-coach
-```
-
 ### Frontend
 
 From the project root:

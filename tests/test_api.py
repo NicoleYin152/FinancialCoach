@@ -85,3 +85,83 @@ def test_negative_income_rejected():
         },
     )
     assert response.status_code == 422
+
+
+def test_expense_categories_instead_of_monthly_expenses():
+    """Request with expense_categories (no monthly_expenses) is valid."""
+    response = client.post(
+        "/agent/run",
+        json={
+            "input": {
+                "monthly_income": 8000,
+                "expense_categories": [
+                    {"category": "Housing", "amount": 2000},
+                    {"category": "Food", "amount": 1000},
+                    {"category": "Other", "amount": 500},
+                ],
+            },
+            "capabilities": {"llm": False},
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "analysis" in data
+    assert "education" in data
+
+
+def test_asset_allocation_valid():
+    """Request with asset_allocation summing to 100 is valid."""
+    response = client.post(
+        "/agent/run",
+        json={
+            "input": {
+                "monthly_income": 8000,
+                "monthly_expenses": 5500,
+                "asset_allocation": [
+                    {"asset_class": "stocks", "allocation_pct": 60},
+                    {"asset_class": "bonds", "allocation_pct": 40},
+                ],
+            },
+            "capabilities": {"llm": False},
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "analysis" in data
+
+
+def test_asset_allocation_invalid_sum_rejected():
+    """Asset allocation not summing to 100 is rejected (422)."""
+    response = client.post(
+        "/agent/run",
+        json={
+            "input": {
+                "monthly_income": 8000,
+                "monthly_expenses": 5500,
+                "asset_allocation": [
+                    {"asset_class": "stocks", "allocation_pct": 60},
+                    {"asset_class": "bonds", "allocation_pct": 30},
+                ],
+            },
+            "capabilities": {"llm": False},
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_backward_compat_monthly_expenses_only():
+    """Legacy request with monthly_income + monthly_expenses only is valid."""
+    response = client.post(
+        "/agent/run",
+        json={
+            "input": {
+                "monthly_income": 8000,
+                "monthly_expenses": 5500,
+            },
+            "capabilities": {"llm": False},
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "analysis" in data
+    assert "generation" in data

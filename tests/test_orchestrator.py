@@ -21,7 +21,8 @@ def test_llm_disabled_path():
     assert len(result["analysis"]) >= 0
     assert "validation" in result
     assert "errors" in result
-    assert "llm_skipped" in result["trace"]
+    trace = result["trace"]
+    assert "llm_skipped" in trace.get("phases", [])
     assert "Savings" in result["generation"] or "ExpenseRatio" in result["generation"] or len(result["generation"]) > 0
 
 
@@ -82,7 +83,8 @@ def test_complete_failure_structured_error():
     assert len(result["errors"]) >= 1
     assert "generation" in result
     assert "trace" in result
-    assert "input_validation_failed" in result["trace"]
+    trace = result["trace"]
+    assert "input_validation_failed" in trace.get("phases", [])
 
 
 def test_valid_end_to_end():
@@ -99,9 +101,12 @@ def test_valid_end_to_end():
     assert isinstance(result["analysis"], list)
     assert isinstance(result["education"], dict)
     assert isinstance(result["errors"], list)
-    assert isinstance(result["trace"], list)
-    assert "input_validated" in result["trace"]
-    assert "response_produced" in result["trace"]
+    trace = result["trace"]
+    assert "tools_executed" in trace
+    assert "context_snapshot" in trace
+    phases = trace.get("phases", [])
+    assert "input_validated" in phases
+    assert "response_produced" in phases
 
 
 def test_missing_input_fields():

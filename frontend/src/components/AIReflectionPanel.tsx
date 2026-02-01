@@ -29,8 +29,11 @@ export function AIReflectionPanel({
 
   if (!response) return null;
 
-  const llmUsed = response.trace?.includes("llm_executed") ?? false;
-  const llmSkipped = response.trace?.includes("llm_skipped") ?? false;
+  const phases = Array.isArray(response.trace)
+    ? response.trace
+    : (response.trace as { phases?: string[] })?.phases ?? [];
+  const llmUsed = phases.includes("llm_executed");
+  const llmSkipped = phases.includes("llm_skipped");
 
   return (
     <motion.div

@@ -13,6 +13,9 @@ import { RiskCard } from "../components/RiskCard";
 import { SavingsGauge } from "../components/SavingsGauge";
 import { ExpenseChart } from "../components/ExpenseChart";
 import { MonthlyTrendChart } from "../components/MonthlyTrendChart";
+import { AssetAllocationChart } from "../components/AssetAllocationChart";
+import { ScenarioDeltaInput, type ScenarioDelta } from "../components/ScenarioDeltaInput";
+import { ScenarioComparison } from "../components/ScenarioComparison";
 import { AIReflectionPanel } from "../components/AIReflectionPanel";
 import { DIMENSION_TO_CHART } from "../utils/mappings";
 import type { MonthlyDataPoint } from "../utils/sampleDataGenerator";
@@ -26,25 +29,96 @@ const DEFAULT_INPUT: FinancialInput = {
 
 function toAgentInput(input: FinancialInput): AgentInput {
   const monthly_income = Number.parseFloat(input.monthly_income) || 0;
-  const monthly_expenses = Number.parseFloat(input.monthly_expenses) || 0;
+  const expenseCategories = input.expense_categories?.filter(
+    (c) => c.category.trim() && !Number.isNaN(Number.parseFloat(c.amount))
+  );
+  const categorySum = expenseCategories?.reduce(
+    (s, c) => s + (Number.parseFloat(c.amount) || 0),
+    0
+  ) ?? 0;
+  const monthly_expenses =
+    categorySum > 0 ? categorySum : Number.parseFloat(input.monthly_expenses) || 0;
   const current_savings = input.current_savings
     ? Number.parseFloat(input.current_savings)
     : undefined;
   const risk_tolerance = input.risk_tolerance || undefined;
-  return {
+
+  const agentInput: AgentInput = {
     monthly_income,
-    monthly_expenses,
     ...(current_savings != null && !Number.isNaN(current_savings) && {
       current_savings,
     }),
     ...(risk_tolerance && { risk_tolerance }),
   };
+
+  if (expenseCategories && expenseCategories.length > 0) {
+    agentInput.expense_categories = expenseCategories.map((c) => ({
+      category: c.category.trim(),
+      amount: Number.parseFloat(c.amount) || 0,
+    })).filter((c) => c.category && c.amount > 0);
+    if (agentInput.expense_categories.length === 0) {
+      agentInput.monthly_expenses = monthly_expenses;
+    }
+  } else {
+    agentInput.monthly_expenses = monthly_expenses;
+  }
+
+  const assetAllocation = input.asset_allocation?.filter(
+    (a) => a.asset_class.trim() && !Number.isNaN(Number.parseFloat(a.allocation_pct))
+  );
+  if (assetAllocation && assetAllocation.length > 0) {
+    const total = assetAllocation.reduce(
+      (s, a) => s + (Number.parseFloat(a.allocation_pct) || 0),
+      0
+    );
+    if (Math.abs(total - 100) < 0.1) {
+      agentInput.asset_allocation = assetAllocation.map((a) => ({
+        asset_class: a.asset_class.trim(),
+        allocation_pct: Number.parseFloat(a.allocation_pct) || 0,
+      }));
+    }
+  }
+
+  return agentInput;
+}
+
+function applyScenarioDelta(
+  baseline: AgentInput,
+  delta: ScenarioDelta
+): AgentInput {
+  const income = baseline.monthly_income;
+  const deltaAmount = delta.amount;
+
+  const scenario: AgentInput = {
+    monthly_income: income,
+    current_savings: baseline.current_savings,
+    risk_tolerance: baseline.risk_tolerance,
+    asset_allocation: baseline.asset_allocation,
+  };
+
+  if (baseline.expense_categories && baseline.expense_categories.length > 0) {
+    const cats = baseline.expense_categories.map((c) => ({
+      category: c.category,
+      amount: c.category === delta.category ? c.amount + deltaAmount : c.amount,
+    }));
+    if (!cats.some((c) => c.category === delta.category)) {
+      cats.push({ category: delta.category, amount: deltaAmount });
+    }
+    scenario.expense_categories = cats.filter((c) => c.amount > 0);
+    const total = scenario.expense_categories.reduce((s, c) => s + c.amount, 0);
+    scenario.monthly_expenses = total;
+  } else {
+    const baseExp = baseline.monthly_expenses ?? 0;
+    scenario.monthly_expenses = baseExp + deltaAmount;
+  }
+  return scenario;
 }
 
 export function Dashboard() {
   const [input, setInput] = useState<FinancialInput>(DEFAULT_INPUT);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [monthlyData, setMonthlyData] = useState<MonthlyDataPoint[] | null>(null);
+  const [scenarioDelta, setScenarioDelta] = useState<ScenarioDelta | null>(null);
   const [highlightedDimension, setHighlightedDimension] = useState<string | null>(
     null
   );
@@ -54,10 +128,22 @@ export function Dashboard() {
     onSuccess: () => {},
   });
 
+  const scenarioMutation = useMutation({
+    mutationFn: runAgent,
+    onSuccess: () => {},
+  });
+
   const handleRun = () => {
     const agentInput = toAgentInput(input);
-    if (agentInput.monthly_income <= 0 || agentInput.monthly_expenses < 0) return;
+    if (agentInput.monthly_income <= 0) return;
+    const exp = agentInput.monthly_expenses ?? agentInput.expense_categories?.reduce((s, c) => s + c.amount, 0) ?? 0;
+    if (exp < 0) return;
+
     mutation.mutate(agentInput);
+    if (scenarioDelta && scenarioDelta.amount !== 0) {
+      const scenarioInput = applyScenarioDelta(agentInput, scenarioDelta);
+      scenarioMutation.mutate(scenarioInput);
+    }
   };
 
   const handlePresetSelect = (preset: FinancialInput) => {
@@ -81,7 +167,12 @@ export function Dashboard() {
   };
 
   const income = Number.parseFloat(input.monthly_income) || 0;
-  const expenses = Number.parseFloat(input.monthly_expenses) || 0;
+  const categorySum = input.expense_categories?.reduce(
+    (s, c) => s + (Number.parseFloat(c.amount) || 0),
+    0
+  ) ?? 0;
+  const expenses =
+    categorySum > 0 ? categorySum : Number.parseFloat(input.monthly_expenses) || 0;
   const savingsRate = income > 0 ? (income - expenses) / income : 0;
   const response = mutation.data as AgentResponse | undefined;
   const hasResponse = !!response;
@@ -96,6 +187,19 @@ export function Dashboard() {
   const isTrendHighlighted =
     highlightedDimension === "Input" ||
     DIMENSION_TO_CHART[highlightedDimension ?? ""] === "MonthlyTrendChart";
+  const isAssetHighlighted =
+    highlightedDimension === "AssetConcentration" ||
+    DIMENSION_TO_CHART[highlightedDimension ?? ""] === "AssetAllocationChart";
+
+  const assetAllocation = input.asset_allocation
+    ?.filter((a) => a.asset_class.trim() && !Number.isNaN(Number.parseFloat(a.allocation_pct)))
+    .map((a) => ({
+      asset_class: a.asset_class.trim(),
+      allocation_pct: Number.parseFloat(a.allocation_pct) || 0,
+    })) ?? [];
+  const allocationTotal = assetAllocation.reduce((s, a) => s + a.allocation_pct, 0);
+  const hasValidAllocation =
+    assetAllocation.length > 0 && Math.abs(allocationTotal - 100) < 0.1;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-950">
@@ -119,8 +223,8 @@ export function Dashboard() {
               input={input}
               onInputChange={setInput}
               onRun={handleRun}
-              disabled={mutation.isPending}
-              loading={mutation.isPending}
+              disabled={mutation.isPending || scenarioMutation.isPending}
+              loading={mutation.isPending || scenarioMutation.isPending}
               error={
                 mutation.isError
                   ? getAgentErrorMessage(mutation.error)
@@ -136,11 +240,21 @@ export function Dashboard() {
               onSampleDataGenerated={handleSampleDataGenerated}
               disabled={mutation.isPending}
             />
+            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-md dark:border-slate-700 dark:bg-slate-800">
+              <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                What-if scenario
+              </h3>
+              <ScenarioDeltaInput
+                delta={scenarioDelta}
+                onChange={setScenarioDelta}
+                disabled={mutation.isPending || scenarioMutation.isPending}
+              />
+            </div>
           </div>
 
           <div className="space-y-8 lg:col-span-2">
             <AnimatePresence mode="wait">
-              {mutation.isPending && (
+              {(mutation.isPending || scenarioMutation.isPending) && (
                 <motion.div
                   key="loading"
                   initial={{ opacity: 0 }}
@@ -173,7 +287,7 @@ export function Dashboard() {
               )}
             </AnimatePresence>
 
-            {!mutation.isPending && (
+            {!mutation.isPending && !scenarioMutation.isPending && (
               <>
                 <SummaryBanner
                   monthlyIncome={income}
@@ -218,12 +332,30 @@ export function Dashboard() {
                   />
                 </div>
 
+                {hasValidAllocation && (
+                  <AssetAllocationChart
+                    allocation={assetAllocation}
+                    highlighted={isAssetHighlighted}
+                  />
+                )}
+
                 <MonthlyTrendChart
                   monthlyIncome={income}
                   monthlyExpenses={expenses}
                   monthlyData={monthlyData}
                   highlighted={isTrendHighlighted}
                 />
+
+                {scenarioDelta &&
+                  scenarioDelta.amount !== 0 &&
+                  mutation.data &&
+                  scenarioMutation.data && (
+                    <ScenarioComparison
+                      baseline={mutation.data}
+                      scenario={scenarioMutation.data}
+                      scenarioLabel={`+$${scenarioDelta.amount} ${scenarioDelta.category}`}
+                    />
+                  )}
 
                 <AIReflectionPanel
                   response={response ?? null}

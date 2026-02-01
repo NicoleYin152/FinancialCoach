@@ -3,6 +3,7 @@
 from typing import Dict, List
 
 from tools.rules import RuleFinding
+from tools.tool_protocol import ToolResult
 
 
 _EDUCATION_MAP: Dict[str, str] = {
@@ -19,6 +20,20 @@ _EDUCATION_MAP: Dict[str, str] = {
     "Input": (
         "Valid financial input requires positive income and non-negative expenses. "
         "Please provide accurate monthly income and expense figures."
+    ),
+    "ExpenseConcentration": (
+        "When one expense category dominates, your budget is less resilient to changes in that area. "
+        "Diversifying spending across categories reduces concentration risk and makes it easier to adjust when circumstances change."
+    ),
+    "AssetConcentration": (
+        "Concentration in a single asset class increases volatility risk. "
+        "Diversification across asset classes can help smooth returns over time. "
+        "This is structural guidance only—not investment advice."
+    ),
+    "Liquidity": (
+        "Liquidity—how many months of expenses your savings can cover—is important for "
+        "handling unexpected income drops or emergencies. Experts often recommend "
+        "3–6 months of expenses in easily accessible savings."
     ),
 }
 
@@ -40,6 +55,19 @@ def get_education_for_findings(findings: List[RuleFinding]) -> Dict[str, str]:
     result: Dict[str, str] = {}
     for finding in findings:
         dim = finding.dimension
+        if dim not in result:
+            result[dim] = get_education(dim)
+    return result
+
+
+def get_education_for_results(results: List[ToolResult]) -> Dict[str, str]:
+    """
+    Map each result's dimension to its education content.
+    Unknown dimensions yield empty string.
+    """
+    result: Dict[str, str] = {}
+    for r in results:
+        dim = r.dimension
         if dim not in result:
             result[dim] = get_education(dim)
     return result

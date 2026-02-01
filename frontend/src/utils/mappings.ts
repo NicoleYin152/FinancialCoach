@@ -2,6 +2,9 @@
 export const DIMENSION_TO_CHART: Record<string, string> = {
   Savings: "SavingsGauge",
   ExpenseRatio: "ExpenseChart",
+  ExpenseConcentration: "ExpenseChart",
+  AssetConcentration: "AssetAllocationChart",
+  Liquidity: "SavingsGauge",
   Input: "MonthlyTrendChart",
 };
 
@@ -28,5 +31,8 @@ export const RISK_COLORS: Record<string, { bg: string; text: string; border: str
 export const DIMENSION_LABELS: Record<string, string> = {
   Savings: "Savings Rate",
   ExpenseRatio: "Expense Ratio",
+  ExpenseConcentration: "Expense Concentration",
+  AssetConcentration: "Asset Concentration",
+  Liquidity: "Liquidity",
   Input: "Input Validation",
 };

@@ -1,9 +1,14 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { Calculator, Loader2 } from "lucide-react";
+import { Calculator, ChevronDown, ChevronUp, Loader2, PieChart } from "lucide-react";
+import { ExpenseCategoryEditor, type ExpenseCategoryRow } from "./ExpenseCategoryEditor";
+import { AssetAllocationEditor, type AssetAllocationRow } from "./AssetAllocationEditor";
 
 export interface FinancialInput {
   monthly_income: string;
   monthly_expenses: string;
+  expense_categories?: ExpenseCategoryRow[];
+  asset_allocation?: AssetAllocationRow[];
   current_savings?: string;
   risk_tolerance?: string;
 }
@@ -25,26 +30,46 @@ export function InputPanel({
   loading = false,
   error,
 }: InputPanelProps) {
+  const [expenseBreakdownOpen, setExpenseBreakdownOpen] = useState(false);
+  const [assetAllocationOpen, setAssetAllocationOpen] = useState(false);
+
   const update = (field: keyof FinancialInput, value: string) => {
     onInputChange({ ...input, [field]: value });
   };
 
+  const categories = input.expense_categories ?? [];
+  const allocation = input.asset_allocation ?? [];
+
+  const categorySum = categories.reduce(
+    (s, r) => s + (Number.parseFloat(r.amount) || 0),
+    0
+  );
+  const allocationTotal = allocation.reduce(
+    (s, r) => s + (Number.parseFloat(r.allocation_pct) || 0),
+    0
+  );
+  const allocationValid = Math.abs(allocationTotal - 100) < 0.1;
+
+  const expensesFromCategories = categorySum > 0 ? categorySum : null;
+
   const handleRun = () => {
     if (disabled || loading) return;
     const income = Number.parseFloat(input.monthly_income);
-    const expenses = Number.parseFloat(input.monthly_expenses);
     if (Number.isNaN(income) || income <= 0) return;
-    if (Number.isNaN(expenses) || expenses < 0) return;
+    const exp = expensesFromCategories ?? Number.parseFloat(input.monthly_expenses);
+    if (Number.isNaN(exp) || exp < 0) return;
+    if (allocation.length > 0 && !allocationValid) return;
     onRun();
   };
 
   const income = Number.parseFloat(input.monthly_income);
-  const expenses = Number.parseFloat(input.monthly_expenses);
+  const hasValidExpenses =
+    expensesFromCategories !== null ? expensesFromCategories > 0 : !Number.isNaN(Number.parseFloat(input.monthly_expenses)) && Number.parseFloat(input.monthly_expenses) >= 0;
   const canRun =
     !Number.isNaN(income) &&
     income > 0 &&
-    !Number.isNaN(expenses) &&
-    expenses >= 0;
+    hasValidExpenses &&
+    (allocation.length === 0 || allocationValid);
 
   return (
     <motion.div
@@ -83,6 +108,9 @@ export function InputPanel({
             className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300"
           >
             Monthly Expenses
+            {expensesFromCategories !== null && (
+              <span className="ml-2 text-slate-500">(from breakdown: ${expensesFromCategories.toFixed(2)})</span>
+            )}
           </label>
           <input
             id="monthly_expenses"
@@ -90,10 +118,58 @@ export function InputPanel({
             min="0"
             step="0.01"
             placeholder="e.g. 5500"
-            value={input.monthly_expenses}
+            value={expensesFromCategories !== null ? String(expensesFromCategories.toFixed(2)) : input.monthly_expenses}
             onChange={(e) => update("monthly_expenses", e.target.value)}
-            className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2 text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:placeholder-slate-500"
+            disabled={expensesFromCategories !== null}
+            className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2 text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:placeholder-slate-500 dark:disabled:bg-slate-800"
           />
+        </div>
+        <div>
+          <button
+            type="button"
+            onClick={() => setExpenseBreakdownOpen((o) => !o)}
+            className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+          >
+            Expense breakdown (by category)
+            {expenseBreakdownOpen ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </button>
+          {expenseBreakdownOpen && (
+            <div className="mt-2">
+              <ExpenseCategoryEditor
+                categories={categories}
+                onChange={(c) => onInputChange({ ...input, expense_categories: c })}
+                disabled={disabled}
+              />
+            </div>
+          )}
+        </div>
+        <div>
+          <button
+            type="button"
+            onClick={() => setAssetAllocationOpen((o) => !o)}
+            className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+          >
+            <PieChart className="h-4 w-4" />
+            Asset allocation (optional)
+            {assetAllocationOpen ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </button>
+          {assetAllocationOpen && (
+            <div className="mt-2">
+              <AssetAllocationEditor
+                allocation={allocation}
+                onChange={(a) => onInputChange({ ...input, asset_allocation: a })}
+                disabled={disabled}
+              />
+            </div>
+          )}
         </div>
         <div>
           <label

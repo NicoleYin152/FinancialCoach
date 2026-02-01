@@ -80,4 +80,59 @@ def evaluate(input_data: Dict[str, Any]) -> List[RuleFinding]:
             )
         )
 
+    # Expense concentration rules (when expense_categories provided)
+    expense_categories = input_data.get("expense_categories")
+    if expense_categories and expenses > 0:
+        for cat in expense_categories:
+            if isinstance(cat, dict):
+                amt = float(cat.get("amount", 0) or 0)
+                cname = (cat.get("category") or "").strip()
+                if cname and amt > 0:
+                    pct = amt / expenses
+                    if pct > 0.50:
+                        findings.append(
+                            RuleFinding(
+                                dimension="ExpenseConcentration",
+                                risk_level="high",
+                                reason=f"Single category ({cname}) exceeds 50% of expenses",
+                            )
+                        )
+                        break
+                    elif pct > 0.40:
+                        findings.append(
+                            RuleFinding(
+                                dimension="ExpenseConcentration",
+                                risk_level="medium",
+                                reason=f"Single category ({cname}) exceeds 40% of expenses",
+                            )
+                        )
+                        break
+
+    # Asset allocation concentration rules (when asset_allocation provided)
+    asset_allocation = input_data.get("asset_allocation")
+    if asset_allocation:
+        for a in asset_allocation:
+            if isinstance(a, dict):
+                pct = float(a.get("allocation_pct", 0) or 0)
+                aclass = (a.get("asset_class") or "").strip()
+                if aclass and pct > 0:
+                    if pct > 80:
+                        findings.append(
+                            RuleFinding(
+                                dimension="AssetConcentration",
+                                risk_level="high",
+                                reason=f"Single asset class ({aclass}) exceeds 80%",
+                            )
+                        )
+                        break
+                    elif pct > 60:
+                        findings.append(
+                            RuleFinding(
+                                dimension="AssetConcentration",
+                                risk_level="medium",
+                                reason=f"Single asset class ({aclass}) exceeds 60%",
+                            )
+                        )
+                        break
+
     return findings

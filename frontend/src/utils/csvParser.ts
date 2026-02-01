@@ -1,6 +1,7 @@
 export interface ParsedFinancials {
-  monthly_income: number;
+  monthly_income?: number;
   monthly_expenses: number;
+  expense_categories?: { category: string; amount: number }[];
 }
 
 export interface ParseResult {
@@ -55,7 +56,7 @@ export function parseCsvToFinancials(csvText: string): CsvParseResult {
   const expenseIdx = findColumnIndex(headers, EXPENSE_ALIASES);
 
   if (incomeIdx >= 0 && expenseIdx >= 0) {
-    // Format: date, income, expenses
+    // Format A: month, income, expenses (monthly aggregates)
     let totalIncome = 0;
     let totalExpenses = 0;
     let rowCount = 0;
@@ -63,6 +64,12 @@ export function parseCsvToFinancials(csvText: string): CsvParseResult {
       const cols = lines[i].split(",").map((c) => c.trim());
       const inc = parseFloatSafe(cols[incomeIdx] ?? "0");
       const exp = parseFloatSafe(cols[expenseIdx] ?? "0");
+      if (Number.isNaN(inc) || Number.isNaN(exp)) {
+        return { success: false, error: `Row ${i + 1}: income and expenses must be valid numbers` };
+      }
+      if (exp < 0) {
+        return { success: false, error: `Row ${i + 1}: expenses cannot be negative` };
+      }
       if (inc > 0 || exp > 0) {
         totalIncome += inc;
         totalExpenses += exp;
@@ -81,11 +88,58 @@ export function parseCsvToFinancials(csvText: string): CsvParseResult {
     };
   }
 
-  // Format: date, amount, type (each row is a transaction)
+  // Format B: month, category, amount (categorized expenses - aggregate by category)
+  const categoryIdx = headers.findIndex((h) => /category/i.test(h) && !/type/i.test(h));
+  const amountIdxB = headers.findIndex((h) => /amount|value/i.test(h));
+  const monthIdx = headers.findIndex((h) => /month|date|period/i.test(h));
+  if (categoryIdx >= 0 && amountIdxB >= 0) {
+    const categoryTotals: Record<string, number> = {};
+    let totalIncome = 0;
+    const monthsSeen = new Set<string>();
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(",").map((c) => c.trim());
+      const amtStr = cols[amountIdxB] ?? "";
+      const amt = parseFloatSafe(amtStr);
+      if (amtStr && Number.isNaN(amt)) {
+        return { success: false, error: `Row ${i + 1}: amount "${amtStr}" must be a valid number` };
+      }
+      if (amt < 0) {
+        return { success: false, error: `Row ${i + 1}: amount cannot be negative` };
+      }
+      const cat = (cols[categoryIdx] ?? "").trim();
+      if (!cat) {
+        return { success: false, error: `Row ${i + 1}: category cannot be empty` };
+      }
+      if (monthIdx >= 0) {
+        const monthStr = (cols[monthIdx] ?? "").slice(0, 7);
+        if (monthStr) monthsSeen.add(monthStr);
+      }
+      categoryTotals[cat] = (categoryTotals[cat] ?? 0) + amt;
+    }
+    const monthCount = Math.max(monthsSeen.size || 1, 1);
+    const expenseCategories = Object.entries(categoryTotals)
+      .map(([category, amount]) => ({ category, amount: amount / monthCount }))
+      .filter((c) => c.amount > 0)
+      .sort((a, b) => b.amount - a.amount);
+    const totalExpenses = expenseCategories.reduce((s, c) => s + c.amount, 0);
+    if (expenseCategories.length === 0) {
+      return { success: false, error: "No valid expense data found" };
+    }
+    const data: ParsedFinancials = {
+      monthly_expenses: totalExpenses,
+      expense_categories: expenseCategories,
+    };
+    if (totalIncome > 0) {
+      data.monthly_income = totalIncome / monthCount;
+    }
+    return { success: true, data };
+  }
+
+  // Format C: date, amount, type (each row is a transaction)
   const amountIdx = headers.findIndex(
     (h) => /amount|value|sum/i.test(h) && !/income|expense/i.test(h)
   );
-  const typeIdx = headers.findIndex((h) => /type|category/i.test(h));
+  const typeIdx = headers.findIndex((h) => /type/i.test(h) && !/category/i.test(h));
   const dateIdx = headers.findIndex((h) => /date|month|period/i.test(h));
   if (amountIdx >= 0 && typeIdx >= 0) {
     let totalIncome = 0;
@@ -149,5 +203,8 @@ export function parseCsvToFinancials(csvText: string): CsvParseResult {
     };
   }
 
-  return { success: false, error: "Could not detect income/expense columns. Use headers like: date, income, expenses" };
+  return {
+    success: false,
+    error: "Could not detect columns. Supported formats: (1) month, income, expenses (2) month, category, amount (3) date, amount, type",
+  };
 }

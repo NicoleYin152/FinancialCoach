@@ -1,0 +1,17 @@
+# API image does not need frontend or test artifacts
+frontend/
+tests/
+eval/
+scripts/
+.git/
+.gitignore
+.env
+*.md
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/

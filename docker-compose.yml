@@ -1,0 +1,9 @@
+# Smart Financial Coach — API only.
+# Frontend: run separately with VITE_API_URL=http://localhost:8000 (see README).
+# For LLM/agent: create .env with OPENAI_API_KEY=... or pass via environment.
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"

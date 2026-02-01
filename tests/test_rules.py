@@ -115,3 +115,111 @@ def test_normal_case_high_risk():
     # savings 400/5000=8% -> high, expenses 92% -> high
     assert any(f.dimension == "Savings" for f in result)
     assert any(f.dimension == "ExpenseRatio" for f in result)
+
+
+def test_expense_concentration_high():
+    """Single category > 50% of expenses -> ExpenseConcentration high."""
+    result = evaluate({
+        "monthly_income": 10000,
+        "monthly_expenses": 5000,
+        "expense_categories": [
+            {"category": "Housing", "amount": 3000},  # 60%
+            {"category": "Food", "amount": 1000},
+            {"category": "Other", "amount": 1000},
+        ],
+    })
+    exp_conc = [f for f in result if f.dimension == "ExpenseConcentration"]
+    assert len(exp_conc) >= 1
+    assert exp_conc[0].risk_level == "high"
+    assert "50%" in exp_conc[0].reason
+    assert "Housing" in exp_conc[0].reason
+
+
+def test_expense_concentration_medium():
+    """Single category > 40% but <= 50% -> ExpenseConcentration medium."""
+    result = evaluate({
+        "monthly_income": 10000,
+        "monthly_expenses": 5000,
+        "expense_categories": [
+            {"category": "Housing", "amount": 2200},  # 44%
+            {"category": "Food", "amount": 1500},
+            {"category": "Other", "amount": 1300},
+        ],
+    })
+    exp_conc = [f for f in result if f.dimension == "ExpenseConcentration"]
+    assert len(exp_conc) >= 1
+    assert exp_conc[0].risk_level == "medium"
+    assert "40%" in exp_conc[0].reason
+
+
+def test_expense_concentration_none_when_diversified():
+    """Diversified categories -> no ExpenseConcentration finding."""
+    result = evaluate({
+        "monthly_income": 10000,
+        "monthly_expenses": 5000,
+        "expense_categories": [
+            {"category": "Housing", "amount": 1500},  # 30%
+            {"category": "Food", "amount": 1000},    # 20%
+            {"category": "Transport", "amount": 1000},
+            {"category": "Other", "amount": 1500},
+        ],
+    })
+    exp_conc = [f for f in result if f.dimension == "ExpenseConcentration"]
+    assert len(exp_conc) == 0
+
+
+def test_asset_concentration_high():
+    """Single asset class > 80% -> AssetConcentration high."""
+    result = evaluate({
+        "monthly_income": 10000,
+        "monthly_expenses": 5000,
+        "asset_allocation": [
+            {"asset_class": "stocks", "allocation_pct": 90},
+            {"asset_class": "bonds", "allocation_pct": 10},
+        ],
+    })
+    asset_conc = [f for f in result if f.dimension == "AssetConcentration"]
+    assert len(asset_conc) >= 1
+    assert asset_conc[0].risk_level == "high"
+    assert "80%" in asset_conc[0].reason
+    assert "stocks" in asset_conc[0].reason
+
+
+def test_asset_concentration_medium():
+    """Single asset class > 60% but <= 80% -> AssetConcentration medium."""
+    result = evaluate({
+        "monthly_income": 10000,
+        "monthly_expenses": 5000,
+        "asset_allocation": [
+            {"asset_class": "stocks", "allocation_pct": 70},
+            {"asset_class": "bonds", "allocation_pct": 30},
+        ],
+    })
+    asset_conc = [f for f in result if f.dimension == "AssetConcentration"]
+    assert len(asset_conc) >= 1
+    assert asset_conc[0].risk_level == "medium"
+    assert "60%" in asset_conc[0].reason
+
+
+def test_asset_concentration_none_when_diversified():
+    """Diversified asset allocation -> no AssetConcentration finding."""
+    result = evaluate({
+        "monthly_income": 10000,
+        "monthly_expenses": 5000,
+        "asset_allocation": [
+            {"asset_class": "stocks", "allocation_pct": 50},
+            {"asset_class": "bonds", "allocation_pct": 30},
+            {"asset_class": "cash", "allocation_pct": 20},
+        ],
+    })
+    asset_conc = [f for f in result if f.dimension == "AssetConcentration"]
+    assert len(asset_conc) == 0
+
+
+def test_backward_compat_no_expense_categories():
+    """Without expense_categories or asset_allocation, only legacy rules run."""
+    result = evaluate({"monthly_income": 5000, "monthly_expenses": 4600})
+    exp_conc = [f for f in result if f.dimension == "ExpenseConcentration"]
+    asset_conc = [f for f in result if f.dimension == "AssetConcentration"]
+    assert len(exp_conc) == 0
+    assert len(asset_conc) == 0

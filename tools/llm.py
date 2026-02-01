@@ -69,3 +69,45 @@ def generate(
         if capabilities.fallback:
             return FALLBACK_STUB_MESSAGE
         raise
+
+
+def _build_explain_prompt(results_str: str, user_question: str) -> str:
+    """Build prompt for explain_result. No advice language."""
+    return (
+        "You are a financial education assistant. Do NOT give advice, recommendations, "
+        "or predictions. Only explain what the analysis shows in plain language.\n\n"
+        f"Analysis results:\n{results_str}\n\n"
+        f"User asked: {user_question}\n\n"
+        "Explain the relevant findings in 2-4 sentences. Use only the information above."
+    )
+
+
+def explain_results(
+    results_str: str,
+    user_question: str,
+    api_key: str | None,
+) -> str:
+    """
+    Use LLM to explain existing ToolResults in response to user question.
+    Returns fallback message if LLM disabled or fails.
+    """
+    if not api_key or not api_key.strip():
+        return (
+            "I can explain the analysis. Please ensure the API is configured "
+            "for explanation features."
+        )
+
+    try:
+        from openai import OpenAI
+
+        prompt = _build_explain_prompt(results_str, user_question)
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+        )
+        content = response.choices[0].message.content
+        return content.strip() if content else FALLBACK_STUB_MESSAGE
+    except Exception:
+        return FALLBACK_STUB_MESSAGE

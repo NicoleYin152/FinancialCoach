@@ -1,7 +1,7 @@
-import { Dashboard } from "./pages/Dashboard";
+import { ChatPanel } from "./components/ChatPanel";
 
 function App() {
-  return <Dashboard />;
+  return <ChatPanel />;
 }
 
 export default App;

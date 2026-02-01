@@ -1,7 +1,7 @@
 """Expense ratio tool: savings rate, expense ratio, liquidity impact."""
 
 from tools.context import FinancialContext
-from tools.tool_protocol import ToolResult
+from tools.schemas import ToolResult
 
 
 class ExpenseRatioTool:
@@ -22,19 +22,21 @@ class ExpenseRatioTool:
         if savings_rate < 0.10:
             results.append(
                 ToolResult(
+                    tool_name=self.name,
                     dimension="Savings",
                     severity="high",
                     reason="Savings rate below 10%",
-                    supporting_metrics={"savings_rate": savings_rate},
+                    metrics={"savings_rate": savings_rate},
                 )
             )
         elif savings_rate < 0.20:
             results.append(
                 ToolResult(
+                    tool_name=self.name,
                     dimension="Savings",
                     severity="medium",
                     reason="Savings rate below 20%",
-                    supporting_metrics={"savings_rate": savings_rate},
+                    metrics={"savings_rate": savings_rate},
                 )
             )
 
@@ -42,19 +44,21 @@ class ExpenseRatioTool:
         if expense_ratio > 0.90:
             results.append(
                 ToolResult(
+                    tool_name=self.name,
                     dimension=self.dimension,
                     severity="high",
                     reason="Expense ratio above 90%",
-                    supporting_metrics={"expense_ratio": expense_ratio},
+                    metrics={"expense_ratio": expense_ratio},
                 )
             )
         elif expense_ratio > 0.80:
             results.append(
                 ToolResult(
+                    tool_name=self.name,
                     dimension=self.dimension,
                     severity="medium",
                     reason="Expense ratio above 80%",
-                    supporting_metrics={"expense_ratio": expense_ratio},
+                    metrics={"expense_ratio": expense_ratio},
                 )
             )
 

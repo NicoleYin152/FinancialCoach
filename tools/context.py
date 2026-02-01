@@ -92,3 +92,60 @@ class FinancialContext(BaseModel):
             "asset_class_count": len(self.asset_allocation),
             "derived_metrics": self.derived_metrics.copy(),
         }
+
+    def to_api_input(self) -> dict:
+        """Convert back to API input format for scenario construction."""
+        data = {
+            "monthly_income": self.income,
+            "monthly_expenses": self.total_expenses,
+            "expense_categories": [{"category": k, "amount": v} for k, v in self.expense_categories.items()],
+            "asset_allocation": [{"asset_class": k, "allocation_pct": v} for k, v in self.asset_allocation.items()],
+        }
+        if self.current_savings is not None:
+            data["current_savings"] = self.current_savings
+        return data
+
+    def apply_expense_delta(self, category: str, monthly_delta: float) -> "FinancialContext":
+        """Clone and apply expense delta. Returns new context."""
+        cats = dict(self.expense_categories)
+        if not cats and self.total_expenses > 0:
+            cats["Other"] = self.total_expenses
+        cats[category] = cats.get(category, 0) + monthly_delta
+        cats = {k: v for k, v in cats.items() if v > 0}
+        new_expenses = sum(cats.values())
+        income = self.income
+        savings_rate = (income - new_expenses) / income if income > 0 else 0.0
+        expense_ratio = new_expenses / income if income > 0 else 0.0
+        months = 0.0
+        if self.current_savings and self.current_savings > 0 and new_expenses > 0:
+            months = self.current_savings / new_expenses
+        return FinancialContext(
+            income=income,
+            total_expenses=new_expenses,
+            expense_categories=cats,
+            asset_allocation=dict(self.asset_allocation),
+            current_savings=self.current_savings,
+            derived_metrics={
+                "savings_rate": savings_rate,
+                "expense_ratio": expense_ratio,
+                "months_coverage": months,
+            },
+        )
+
+    def apply_asset_delta(self, asset_class: str, allocation_delta_pct: float) -> "FinancialContext":
+        """Clone and apply asset allocation delta. Redistributes to keep 100%."""
+        alloc = dict(self.asset_allocation)
+        alloc[asset_class] = alloc.get(asset_class, 0) + allocation_delta_pct
+        alloc = {k: v for k, v in alloc.items() if v > 0}
+        total = sum(alloc.values())
+        if abs(total - 100) > 0.1 and alloc:
+            scale = 100 / total
+            alloc = {k: v * scale for k, v in alloc.items()}
+        return FinancialContext(
+            income=self.income,
+            total_expenses=self.total_expenses,
+            expense_categories=dict(self.expense_categories),
+            asset_allocation=alloc,
+            current_savings=self.current_savings,
+            derived_metrics=dict(self.derived_metrics),
+        )

@@ -4,10 +4,12 @@ A capability-gated, agent-orchestrated system that demonstrates **secure AI inte
 
 ## What This System Demonstrates
 
-- **Secure agent orchestration** — One agent + orchestrator + tools; no multi-agent systems
-- **Capability-gated LLM usage** — LLMs are optional; the system runs fully without them
-- **Graceful degradation** — Deterministic logic always produces output; LLM failures trigger fallbacks
-- **Trust boundaries** — Deterministic rules and validation; LLMs never override rule outcomes
+- **Chat-first agent** — Chat is the only user surface; the LLM planner decides the next action; deterministic tools do the computation.
+- **Secure agent orchestration** — One agent + orchestrator + tools; no multi-agent systems.
+- **Capability-gated LLM usage** — LLMs are optional; the system runs fully without them.
+- **Graceful degradation** — Deterministic logic always produces output; LLM failures trigger noop (no silent heuristic fallback).
+- **Trust boundaries** — Deterministic rules and validation; LLMs never override rule outcomes.
+- **Clarification retry policy** — At most 2 clarification attempts per unresolved intent; then a minimal noop message.
 
 ## How to Run Locally
 
@@ -17,7 +19,15 @@ A capability-gated, agent-orchestrated system that demonstrates **secure AI inte
 uvicorn api.server:app --reload
 ```
 
-Then send a request:
+Then use the **chat** endpoint (primary surface):
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{"conversation_id":"t1","message":"Analyze my finances","input":{"monthly_income":8000,"monthly_expenses":5500},"capabilities":{"llm":false,"agent":false}}'
+```
+
+Or the **single-run** endpoint (unchanged behavior):
 
 ```bash
 curl -X POST http://127.0.0.1:8000/agent/run \
@@ -37,115 +47,137 @@ pip install -r requirements.txt
 docker build -t financial-coach . && docker run -p 8000:8000 financial-coach
 ```
 
+### Frontend
+
+From the project root:
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Backend must be running on `http://127.0.0.1:8000` (Vite proxies `/agent` to it). See [DOCUMENTATION.md](DOCUMENTATION.md) section 13 for frontend details.
+
+## API Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /agent/chat` | Multi-turn chat. Send a message and optional financial input; returns `assistant_message`, `run_id`, `analysis`, `trace`, `message_type`, `ui_blocks`. Primary user surface. |
+| `POST /agent/run` | Single analysis run. Same as before: validate input, run tools, return analysis, education, generation, validation, trace. |
+| `GET /agent/replay/{run_id}` | Debug: return stored `RunMemory` for a given `run_id`. |
+
 ## How to Enable LLM
 
-1. Create a `.env` file in the project root (do not commit it)
-2. Add your OpenAI API key: `OPENAI_API_KEY=sk-your-key-here`
-3. Set `capabilities.llm: true` in your request body
+1. Create a `.env` file in the project root (do not commit it).
+2. Add your OpenAI API key: `OPENAI_API_KEY=sk-your-key-here`.
+3. Set `capabilities.llm: true` and `capabilities.agent: true` in your request body for chat (so the action planner uses the LLM).
 
 Example with LLM enabled:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/agent/run \
+curl -X POST http://127.0.0.1:8000/agent/chat \
   -H "Content-Type: application/json" \
-  -d '{"input": {"monthly_income": 8000, "monthly_expenses": 5500}, "capabilities": {"llm": true, "retry": true, "fallback": true}}'
+  -d '{"message":"Analyze my finances","input":{"monthly_income":8000,"monthly_expenses":5500},"capabilities":{"llm":true,"agent":true}}'
 ```
 
 ## Security Guarantees
 
-- **No secrets in repo** — All API keys are loaded from environment variables
-- **Public, runnable** — Clone and run without embedding credentials
-- **Deterministic core** — Rules and validation are independent of LLM outputs
-- **Validated outputs** — LLM responses are checked for prohibited advice language
+- **No secrets in repo** — All API keys are loaded from environment variables.
+- **Public, runnable** — Clone and run without embedding credentials.
+- **Deterministic core** — Rules and validation are independent of LLM outputs.
+- **Validated outputs** — LLM responses are checked for prohibited advice language.
 
-## Example Output
+## Chat Flow (Action Schema)
 
-**Request** (LLM disabled):
+The planner returns a single `AgentAction` with:
 
-```json
-{
-  "input": {
-    "monthly_income": 5000,
-    "monthly_expenses": 4500
-  },
-  "capabilities": { "llm": false, "retry": false, "fallback": false }
-}
-```
+- **`type`**: One of `run_analysis`, `explain_previous`, `compare_scenarios`, `clarifying_question`, `noop`.
+- **`reasoning`**: Brief reasoning for the decision.
+- **`parameters`**: Optional dict (e.g. `question`, `expected_schema`, `delta`).
 
-**Response**:
+Behavior:
 
-```json
-{
-  "analysis": [
-    { "dimension": "Savings", "risk_level": "medium", "reason": "Savings rate below 20%" },
-    { "dimension": "ExpenseRatio", "risk_level": "medium", "reason": "Expense ratio above 80%" }
-  ],
-  "education": {
-    "Savings": "Building savings is important for financial security. Experts generally recommend saving at least 20% of income when possible. A higher savings rate provides a larger buffer for unexpected expenses.",
-    "ExpenseRatio": "Your expense ratio shows what portion of income goes to expenses. Keeping expenses below 80% of income leaves room for savings and emergencies. Tracking expenses can help identify areas to adjust."
-  },
-  "generation": "Analysis:\n\n  - Savings: medium risk - Savings rate below 20%\n  - ExpenseRatio: medium risk - Expense ratio above 80%\n\nEducation:\n\n  Savings: Building savings is important...",
-  "validation": { "valid": true, "issues": [] },
-  "errors": [],
-  "trace": [ "input_validated", "rules_executed", "education_fetched", "llm_skipped", "response_produced" ]
-}
-```
+- **First ambiguous input** (e.g. “What if I buy a car?”) → `clarifying_question`; assistant asks for category and amount; no tools run.
+- **Valid delta after clarification** (e.g. “+1500 per month in transport”) → `compare_scenarios`; baseline vs scenario diff; tools run.
+- **Clear intent** (e.g. “Analyze my finances” with input) → `run_analysis`; tools run.
+- **Explain previous** → `explain_previous`; no re-run; explanation from last run.
+- **Clarification retry** — At most 2 clarification attempts; on the third unresolved input, planner returns `noop` with a minimal “insufficient information” message; trace includes `clarification_attempt: 3` and `planner_decision: noop_due_to_clarification_limit`.
 
 ## Design Decisions & Non-Goals
 
-- **No database or persistence** — Outputs are computed per request and not stored; reduces attack surface and keeps the system stateless.
+- **No database or persistence** — Outputs are computed per request; conversation state is in-memory. Reduces attack surface and keeps the system stateless across restarts.
 - **No real financial APIs** — External banking or market data is out of scope; the system uses synthetic input only to demonstrate orchestration patterns.
-- **No multi-agent system** — A single agent receives precomputed tool outputs from the orchestrator; agents do not autonomously invoke tools.
-- **No autonomous tool usage** — The orchestrator invokes tools in a fixed order; agents cannot choose or call tools on their own.
-- **No prescriptive financial advice** — LLMs are restricted to summarization and reflective questions; validation blocks advice language such as "you should" or "buy/sell."
+- **No multi-agent system** — A single agent (planner + executor) receives context; the orchestrator invokes tools based on the planner’s action type.
+- **No prescriptive financial advice** — LLMs are restricted to summarization and reflective questions; validation blocks advice language such as “you should” or “buy/sell.”
+- **No generic help text** — Assistant messages come only from the agent (planner/executor); the UI does not show hardcoded “I’m here to help” style fallbacks.
 
 ## Running Tests
 
 ```bash
-pytest tests/ -v
+pytest tests/ eval/ -v
 ```
 
-All unit tests must pass for the implementation to be considered complete.
+All unit and eval tests must pass. Manual chat acceptance tests (equivalent to the four curl scenarios):
+
+```bash
+PYTHONPATH=. python scripts/manual_chat_tests.py
+```
 
 ## Project Structure & Code Overview
 
 ### Execution Flow
 
-Requests enter via `POST /agent/run` and are handled by the API layer, which validates the payload and passes it to the orchestrator. The orchestrator enforces a fixed pipeline: validate input → run rules → fetch education → optionally call LLM (if enabled and API key present) → validate output → retry or fallback on failure → produce final response. The agent never invokes tools directly; it receives precomputed outputs from the orchestrator and returns the final text.
+- **Chat path**: Request → `POST /agent/chat` → `chat()` in `conversation_orchestrator` → `select_action()` in `action_planner` (LLM when enabled, else deterministic fallback) → `execute()` in `action_executor` (strict branch on `action.type`) → response with `assistant_message`, `trace`, `ui_blocks`.
+- **Run path**: Request → `POST /agent/run` → `run()` in `orchestrator` → validate input → run tools (via `run_tools`) → optional LLM generation → validate output → return analysis, education, generation, trace.
+
+The agent (planner) never invokes tools directly; the executor runs tools only for `run_analysis` and `compare_scenarios` (with delta).
 
 ### Directory Layout
 
-- **`agent/`** — Core orchestration and agent logic. Holds the orchestrator, capability model, config, and the agent that produces the final response.
-- **`tools/`** — Stateless, callable modules used by the orchestrator: deterministic rules, static education lookup, LLM generation (gated), output validation, and retry/backoff.
-- **`api/`** — HTTP interface. Single endpoint that validates request schema and delegates to the orchestrator.
-- **`tests/`** — Unit tests aligned with each functional module; every tool and agent component has a corresponding test file.
+- **`agent/`** — Action planner, action executor, conversation orchestrator, conversation store, delta parser, orchestrator (for `/agent/run`), agent (for final text), capabilities, config, memory, schemas (action, conversation, delta, planner).
+- **`tools/`** — Deterministic tools (input_validation, expense_ratio, expense_concentration, asset_concentration, liquidity), registry, context, education, LLM (gated), validation, retry.
+- **`api/`** — FastAPI app: `POST /agent/run`, `POST /agent/chat`, `GET /agent/replay/{run_id}`.
+- **`eval/`** — Eval tests: chat-first flows, action schema, clarification limit, scenario diff, regression.
+- **`tests/`** — Unit tests for agent, API, capabilities, education, LLM, orchestrator, retry, rules, tools, validation.
+- **`scripts/`** — `manual_chat_tests.py` for the four acceptance curl-style tests.
+- **`frontend/`** — React + Vite; ChatPanel is the main UI; renders backend messages and `ui_blocks` (charts, tables, editors).
 
-### Core Files
+### Core Files (Chat Path)
 
 | File | Purpose |
 |------|---------|
-| `agent/orchestrator.py` | Runs the pipeline, enforces capability gating, retries, and fallbacks; never fails silently. |
-| `agent/agent.py` | Pure function that produces the final response from findings, education, and optional LLM output; no tool calls. |
-| `agent/capabilities.py` | Immutable capability flags (`llm`, `retry`, `fallback`) derived from API input and env; LLM disabled when API key is absent. |
-| `agent/config.py` | Loads environment variables (e.g. `OPENAI_API_KEY`) via `python-dotenv`. |
-| `agent/errors.py` | Custom exceptions for validation, LLM, and retry failures. |
-| `tools/rules.py` | Deterministic risk rules (savings rate, expense ratio); returns `RuleFinding` list. |
-| `tools/education.py` | Static mapping from rule dimensions to education content; returns empty string for unknown keys. |
-| `tools/llm.py` | Capability-gated LLM access; returns `LLMDisabledResult` when disabled, uses fallback stub on provider failure. |
-| `tools/validation.py` | Validates LLM output for prohibited language and structural issues; returns `ValidationResult`. |
-| `tools/retry.py` | Exponential backoff (1s → 2s → 4s) for retriable errors only. |
-| `api/server.py` | FastAPI app; `POST /agent/run` validates input and returns JSON response. |
+| `agent/action_planner.py` | LLM-driven (when enabled) or deterministic; returns `AgentAction`; ambiguous intent → `clarifying_question`; max 2 clarification attempts then `noop`. |
+| `agent/action_executor.py` | Executes only what the planner decided; branches on `action.type`; no help-text fallback. |
+| `agent/conversation_orchestrator.py` | Multi-turn chat; updates conversation state, `clarification_attempt`, `pending_clarification`; merges trace. |
+| `agent/schemas/action.py` | `AgentAction` (type, reasoning, parameters); action types and expected_schema. |
+| `agent/schemas/conversation.py` | `ConversationState`, `ConversationTurn`, `PendingClarification`, `clarification_attempt`. |
+| `agent/delta_parser.py` | Parses user confirmation into `ExpenseDelta` or `AssetDelta`. |
+
+### Core Files (Run Path & Shared)
+
+| File | Purpose |
+|------|---------|
+| `agent/orchestrator.py` | Pipeline for `/agent/run`: validate → run tools → education → optional LLM → validate → retry/fallback. |
+| `agent/agent.py` | Produces final response text from findings, education, and optional LLM output. |
+| `agent/capabilities.py` | Capability flags (`llm`, `retry`, `fallback`, `agent`); LLM disabled when API key absent. |
+| `agent/memory.py` | `RunMemory` and `RUN_HISTORY` for replay and explain_previous. |
+| `tools/registry.py` | Tool registry; `run_tools()` runs input_validation then selected analysis tools. |
+| `tools/validation.py` | Validates LLM output for prohibited language. |
+| `api/server.py` | FastAPI app and request/response schemas. |
 
 ### Test Coverage
 
-Each tool and agent module has a dedicated test file: `test_rules.py` → `rules.py`, `test_education.py` → `education.py`, `test_llm.py` → `llm.py`, `test_validation.py` → `validation.py`, `test_retry.py` → `retry.py`, `test_agent.py` → `agent.py`, `test_orchestrator.py` → `orchestrator.py`, `test_capabilities.py` → `capabilities.py`, `test_api.py` → `api/server.py`. Tests cover edge cases (zero income, boundaries, missing fields), capability gating, validation failures, retries, and end-to-end flows.
-
-### Extensibility and Security
-
-The structure separates orchestration from tools, so new tools (e.g. RAG-backed education) can be added without changing the agent. Capability gating ensures optional features (LLM, retry, fallback) are controlled at runtime. All secrets come from the environment; the codebase remains safe to clone and run. Deterministic rules and validation preserve trust boundaries regardless of LLM availability.
-
----
+- **tests/** — Unit tests: rules, education, LLM, validation, retry, agent, orchestrator, capabilities, API.
+- **eval/** — Chat-first: ambiguous → clarifying, delta → compare_scenarios, retry then noop, clarification limit (2 attempts), baseline vs scenario diff, `/agent/run` unchanged.
 
 ## Architecture
 
-See [DOCUMENTATION.md](DOCUMENTATION.md) for the full Agent-Oriented Architecture Specification.
+See [DOCUMENTATION.md](DOCUMENTATION.md) for the full Agent-Oriented Architecture Specification, including the chat-first flow, API details, and frontend (section 13).
+
+## Release checklist
+
+- [x] Chat-first flow verified
+- [x] Clarification retry capped at 2 attempts
+- [x] No generic assistant fallback text
+- [x] Deterministic tool execution
+- [x] Trace includes planner_decision and clarification_attempt
+- [x] Manual chat tests pass

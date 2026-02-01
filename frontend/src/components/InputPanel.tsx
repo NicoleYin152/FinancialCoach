@@ -16,10 +16,11 @@ export interface FinancialInput {
 interface InputPanelProps {
   input: FinancialInput;
   onInputChange: (input: FinancialInput) => void;
-  onRun: () => void;
+  onRun?: () => void;
   disabled?: boolean;
   loading?: boolean;
   error?: string;
+  hideRunButton?: boolean;
 }
 
 export function InputPanel({
@@ -29,6 +30,7 @@ export function InputPanel({
   disabled = false,
   loading = false,
   error,
+  hideRunButton = false,
 }: InputPanelProps) {
   const [expenseBreakdownOpen, setExpenseBreakdownOpen] = useState(false);
   const [assetAllocationOpen, setAssetAllocationOpen] = useState(false);
@@ -53,7 +55,7 @@ export function InputPanel({
   const expensesFromCategories = categorySum > 0 ? categorySum : null;
 
   const handleRun = () => {
-    if (disabled || loading) return;
+    if (disabled || loading || !onRun) return;
     const income = Number.parseFloat(input.monthly_income);
     if (Number.isNaN(income) || income <= 0) return;
     const exp = expensesFromCategories ?? Number.parseFloat(input.monthly_expenses);
@@ -212,22 +214,24 @@ export function InputPanel({
       {error && (
         <p className="mt-3 text-sm text-rose-600 dark:text-rose-400">{error}</p>
       )}
-      <motion.button
-        whileHover={canRun && !loading ? { scale: 1.01 } : {}}
-        whileTap={canRun && !loading ? { scale: 0.97 } : {}}
-        onClick={handleRun}
-        disabled={!canRun || loading}
-        className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-3 font-medium text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-600"
-      >
-        {loading ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Analyzing your finances...
-          </>
-        ) : (
-          "Analyze My Finances"
-        )}
-      </motion.button>
+      {!hideRunButton && onRun && (
+        <motion.button
+          whileHover={canRun && !loading ? { scale: 1.01 } : {}}
+          whileTap={canRun && !loading ? { scale: 0.97 } : {}}
+          onClick={handleRun}
+          disabled={!canRun || loading}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-3 font-medium text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-600"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Analyzing your finances...
+            </>
+          ) : (
+            "Analyze My Finances"
+          )}
+        </motion.button>
+      )}
     </motion.div>
   );
 }

@@ -11,6 +11,7 @@ def test_missing_capability_defaults_to_false():
     assert caps.llm is False
     assert caps.retry is False
     assert caps.fallback is False
+    assert caps.agent is False
 
 
 def test_missing_capabilities_dict_treated_as_empty():
@@ -22,12 +23,13 @@ def test_missing_capabilities_dict_treated_as_empty():
 
 
 def test_llm_disabled_when_api_key_not_present():
-    """LLM must be False when OPENAI_API_KEY is not set, even if requested."""
+    """LLM and agent must be False when OPENAI_API_KEY is not set, even if requested."""
     caps = Capabilities.from_api_input(
-        {"llm": True, "retry": True, "fallback": True},
+        {"llm": True, "retry": True, "fallback": True, "agent": True},
         api_key=None,
     )
     assert caps.llm is False
+    assert caps.agent is False
     assert caps.retry is True
     assert caps.fallback is True
 

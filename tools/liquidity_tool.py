@@ -1,7 +1,7 @@
 """Liquidity tool: months of coverage, shock simulation (−20% income)."""
 
 from tools.context import FinancialContext
-from tools.tool_protocol import ToolResult
+from tools.schemas import ToolResult
 
 
 class LiquidityTool:
@@ -35,10 +35,11 @@ class LiquidityTool:
         if months_coverage < 1:
             results.append(
                 ToolResult(
+                    tool_name=self.name,
                     dimension=self.dimension,
                     severity="high",
                     reason="Less than 1 month of expense coverage in savings",
-                    supporting_metrics={
+                    metrics={
                         "months_coverage": months_coverage,
                         "current_savings": savings,
                         "monthly_expenses": expenses,
@@ -50,10 +51,11 @@ class LiquidityTool:
         elif months_coverage < 3:
             results.append(
                 ToolResult(
+                    tool_name=self.name,
                     dimension=self.dimension,
                     severity="medium",
                     reason="Less than 3 months of expense coverage",
-                    supporting_metrics={
+                    metrics={
                         "months_coverage": months_coverage,
                         "current_savings": savings,
                         "monthly_expenses": expenses,

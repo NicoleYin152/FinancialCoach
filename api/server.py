@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from agent.capabilities import Capabilities
 from agent.config import get_openai_api_key
+from agent.conversation_orchestrator import chat
+from agent.memory import RUN_HISTORY, RunMemory
 from agent.orchestrator import run
 
 app = FastAPI(title="Smart Financial Coach API")
@@ -59,6 +61,7 @@ class CapabilitiesInput(BaseModel):
     llm: bool = Field(default=False)
     retry: bool = Field(default=False)
     fallback: bool = Field(default=False)
+    agent: bool = Field(default=False, description="Enable planner for tool selection")
 
 
 class AgentRunRequest(BaseModel):
@@ -67,6 +70,15 @@ class AgentRunRequest(BaseModel):
     input: AgentInput
     capabilities: CapabilitiesInput = Field(default_factory=CapabilitiesInput)
     llm_config: Optional[Dict[str, Any]] = Field(default=None)
+
+
+class AgentChatRequest(BaseModel):
+    """Request body for POST /agent/chat."""
+
+    conversation_id: Optional[str] = Field(default=None, description="Existing conversation or new")
+    message: str = Field(..., min_length=1, description="User message")
+    input: Optional[AgentInput] = Field(default=None, description="Financial input from editor or context")
+    capabilities: CapabilitiesInput = Field(default_factory=CapabilitiesInput)
 
 
 @app.post("/agent/run")
@@ -88,3 +100,35 @@ def agent_run(request: AgentRunRequest) -> Dict[str, Any]:
     )
 
     return result
+
+
+@app.post("/agent/chat")
+def agent_chat(request: AgentChatRequest) -> Dict[str, Any]:
+    """
+    Multi-turn conversational agent. Returns assistant_message, run_id, analysis, trace.
+    """
+    input_dict = request.input.model_dump(exclude_none=True) if request.input else None
+    caps_dict = request.capabilities.model_dump()
+    api_key = get_openai_api_key()
+    capabilities = Capabilities.from_api_input(caps_dict, api_key=api_key)
+
+    result = chat(
+        message=request.message,
+        conversation_id=request.conversation_id,
+        input_data=input_dict,
+        capabilities=capabilities,
+        api_key=api_key,
+    )
+    return result
+
+
+@app.get("/agent/replay/{run_id}")
+def agent_replay(run_id: str) -> Dict[str, Any]:
+    """
+    Debug-only: return stored RunMemory for a given run_id.
+    Internal use for replay and debugging.
+    """
+    if run_id not in RUN_HISTORY:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    memory = RUN_HISTORY[run_id]
+    return memory.model_dump()

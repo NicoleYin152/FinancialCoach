@@ -1,16 +1,20 @@
 """Orchestrator: coordinates tools and enforces execution order."""
 
+import time
+import uuid
 from typing import Any, Dict, List
 
 from agent.agent import produce_response
+from agent.memory import RUN_HISTORY, RunMemory
 from agent.capabilities import Capabilities
 from agent.config import get_openai_api_key
+from agent.planner import select_tools
 from tools.context import FinancialContext
 from tools.education import get_education_for_results
 from tools.llm import LLMDisabledResult, generate
-from tools.retry import retry_with_backoff
 from tools.registry import run_tools
-from tools.tool_protocol import ToolResult
+from tools.retry import retry_with_backoff
+from tools.schemas import ToolResult
 from tools.validation import ValidationResult, validate_output
 
 
@@ -102,18 +106,19 @@ def run(
     generation = ""
     validation_result: ValidationResult = ValidationResult(valid=True, issues=[])
     trace: Dict[str, Any] = {
+        "planner_used": False,
+        "planner_status": "skipped",
+        "tools_selected": [],
         "tools_executed": [],
-        "metrics_computed": [],
         "context_snapshot": {},
     }
 
     # 1. Validate input
     input_errors = _validate_input(input_data)
     if input_errors:
-        trace["tools_executed"] = []
-        trace["metrics_computed"] = []
         trace["phases"] = ["input_validation_failed"]
         return {
+            "run_id": None,
             "analysis": [],
             "education": {},
             "generation": "",
@@ -139,6 +144,7 @@ def run(
     except Exception as e:
         trace["phases"] = ["context_build_failed"]
         return {
+            "run_id": None,
             "analysis": [],
             "education": {},
             "generation": "",
@@ -149,29 +155,32 @@ def run(
 
     trace["context_snapshot"] = ctx.to_snapshot()
 
-    # 3. Run tools
-    results, tools_executed, metrics_computed = run_tools(ctx)
+    # 3. Select tools (planner or fallback)
+    key = api_key if api_key is not None else get_openai_api_key()
+    selected_tools = select_tools(ctx, capabilities.agent, key, trace)
+
+    # 4. Run tools
+    results, tools_executed, metrics_computed = run_tools(ctx, selected_tools)
     trace["tools_executed"] = tools_executed
     trace["metrics_computed"] = metrics_computed
     trace["phases"] = ["input_validated", "tools_executed", "education_fetched"]
 
-    # 4. Build analysis (backward compat: risk_level = severity)
+    # 5. Build analysis (backward compat: risk_level = severity, supporting_metrics = metrics)
     analysis = [
         {
             "dimension": r.dimension,
             "risk_level": r.severity,
             "reason": r.reason,
-            "supporting_metrics": r.supporting_metrics,
+            "supporting_metrics": r.metrics,
         }
         for r in results
     ]
 
-    # 5. Fetch education per dimension
+    # 6. Fetch education per dimension
     education = get_education_for_results(results)
 
-    # 6–8. LLM (if enabled), validate, retry/fallback
+    # 7–9. LLM (if enabled), validate, retry/fallback
     llm_output: str | None = None
-    key = api_key if api_key is not None else get_openai_api_key()
 
     if capabilities.llm and key:
         trace["phases"].append("llm_executed")
@@ -224,7 +233,7 @@ def run(
     else:
         trace["phases"].append("llm_skipped")
 
-    # 9. Produce final response (convert ToolResult to RuleFinding-like for produce_response)
+    # 10. Produce final response
     from tools.rules import RuleFinding
 
     findings = [
@@ -236,7 +245,18 @@ def run(
 
     trace["phases"].append("response_produced")
 
+    # Store run memory for replay/debug (in-memory only)
+    run_id = uuid.uuid4().hex
+    RUN_HISTORY[run_id] = RunMemory(
+        run_id=run_id,
+        context_snapshot=trace["context_snapshot"],
+        tools_selected=selected_tools,
+        tool_results=[r.model_dump() for r in results],
+        timestamp=time.time(),
+    )
+
     return {
+        "run_id": run_id,
         "analysis": analysis,
         "education": education,
         "generation": generation,

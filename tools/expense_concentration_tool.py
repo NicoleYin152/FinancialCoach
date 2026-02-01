@@ -1,7 +1,7 @@
 """Expense concentration tool: category dominance, structural rigidity."""
 
 from tools.context import FinancialContext
-from tools.tool_protocol import ToolResult
+from tools.schemas import ToolResult
 
 
 class ExpenseConcentrationTool:
@@ -24,10 +24,11 @@ class ExpenseConcentrationTool:
             if pct > 0.50:
                 results.append(
                     ToolResult(
+                        tool_name=self.name,
                         dimension=self.dimension,
                         severity="high",
                         reason=f"Single category ({cat_name}) exceeds 50% of expenses",
-                        supporting_metrics={
+                        metrics={
                             "largest_category_pct": pct,
                             "dominant_category": cat_name,
                             "amount": amt,
@@ -38,10 +39,11 @@ class ExpenseConcentrationTool:
             elif pct > 0.40:
                 results.append(
                     ToolResult(
+                        tool_name=self.name,
                         dimension=self.dimension,
                         severity="medium",
                         reason=f"Single category ({cat_name}) exceeds 40% of expenses",
-                        supporting_metrics={
+                        metrics={
                             "largest_category_pct": pct,
                             "dominant_category": cat_name,
                             "amount": amt,

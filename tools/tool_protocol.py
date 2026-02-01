@@ -1,19 +1,11 @@
-"""Tool interface and result types."""
+"""Tool interface. Result schema in tools/schemas.py."""
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from tools.context import FinancialContext
+from tools.schemas import ToolResult
 
-
-@dataclass
-class ToolResult:
-    """Structured output from an analysis tool."""
-
-    dimension: str
-    severity: str  # high, medium, invalid, or ok
-    reason: str
-    supporting_metrics: Dict[str, Any] = field(default_factory=dict)
+__all__ = ["ToolResult", "AnalysisTool"]
 
 
 @runtime_checkable
@@ -28,5 +20,5 @@ class AnalysisTool(Protocol):
         ...
 
     def run(self, ctx: FinancialContext) -> ToolResult | list[ToolResult]:
-        """Run analysis and return one or more ToolResults."""
+        """Run analysis and return one or more ToolResults (from tools.schemas)."""
         ...

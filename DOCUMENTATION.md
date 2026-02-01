@@ -4,7 +4,7 @@
 
 ### Version
 
-v1.0
+v1.1 — Chat-first agent, action planner/executor, clarification retry policy.
 
 ---
 
@@ -67,6 +67,17 @@ Key architectural principle:
 
 > **No single agent is required for system execution.
 > All agents degrade independently based on capability availability.**
+
+### 3.1 Chat-First User Surface
+
+The **primary user surface** is multi-turn chat (`POST /agent/chat`). The flow is:
+
+1. **Action planner** (LLM when enabled, else deterministic) decides the next action and returns a single `AgentAction` with `type`, `reasoning`, and `parameters`.
+2. **Action executor** runs only what the planner decided: `run_analysis`, `explain_previous`, `compare_scenarios`, `clarifying_question`, or `noop`. No executor-side intent guessing or generic help-text fallback.
+3. **Clarifying questions** are first-class: ambiguous intents (e.g. “What if I buy a car?”) produce `clarifying_question`; no tools run until the user provides a structured delta (e.g. “+1500 per month in transport”) or valid analysis input.
+4. **Clarification retry policy**: At most **2 clarification attempts** per unresolved intent. On the third ambiguous/unparseable input, the planner returns `noop` with a minimal “insufficient information” message; trace includes `clarification_attempt: 3` and `planner_decision: noop_due_to_clarification_limit`. The counter resets when a non-clarifying action succeeds (`run_analysis`, `compare_scenarios`, `explain_previous`).
+
+The single-run endpoint `POST /agent/run` is unchanged: it runs the pipeline once and returns analysis, education, generation, and trace.
 
 ---
 
@@ -224,9 +235,54 @@ Failure modes are:
 
 ## 8. API Design
 
-The system exposes a single agent-oriented API.
+The system exposes three endpoints.
+
+### POST `/agent/chat` (primary user surface)
+
+Multi-turn conversational agent. Request:
+
+```json
+{
+  "conversation_id": "optional-existing-id",
+  "message": "Analyze my finances",
+  "input": {
+    "monthly_income": 8000,
+    "monthly_expenses": 5500
+  },
+  "capabilities": {
+    "llm": false,
+    "retry": false,
+    "fallback": false,
+    "agent": false
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "conversation_id": "...",
+  "assistant_message": "...",
+  "run_id": "uuid-or-null",
+  "analysis": [...],
+  "education": {...},
+  "trace": {
+    "planner_decision": "run_analysis",
+    "action_taken": "run_analysis",
+    "clarification_attempt": 0,
+    ...
+  },
+  "message_type": "assistant",
+  "ui_blocks": [...]
+}
+```
+
+When the clarification limit is hit, `trace.planner_decision` is `noop_due_to_clarification_limit` and `trace.clarification_attempt` is `3`.
 
 ### POST `/agent/run`
+
+Single analysis run. Request:
 
 ```json
 {
@@ -241,10 +297,7 @@ The system exposes a single agent-oriented API.
     "retry": true,
     "fallback": true
   },
-  "llm_config": {
-    "providers": ["openai", "anthropic", "gemini"],
-    "max_retries": 3
-  }
+  "llm_config": { ... }
 }
 ```
 
@@ -252,13 +305,19 @@ Response:
 
 ```json
 {
-  "analysis": {...},
+  "run_id": "...",
+  "analysis": [...],
   "education": {...},
   "generation": "...",
   "validation": {...},
-  "errors": []
+  "errors": [],
+  "trace": {...}
 }
 ```
+
+### GET `/agent/replay/{run_id}`
+
+Debug-only: returns stored `RunMemory` for a given `run_id` (tools executed, tool results, context snapshot, timestamp). Returns 404 if not found.
 
 ---
 
@@ -366,14 +425,10 @@ This ensures that agents cannot introduce unverified information or side effects
 
 Agents do not directly invoke tools.
 
-Instead, the **Agent Orchestrator**:
+* **Chat path**: The **action planner** (LLM or deterministic) returns an `AgentAction`; the **action executor** runs tools only for `run_analysis` and `compare_scenarios` (with delta). The **conversation orchestrator** manages turns, `clarification_attempt`, and `pending_clarification`.
+* **Run path**: The **orchestrator** (`agent/orchestrator.py`) determines which tools are available, runs them in order, injects tool outputs as context, and handles retries and fallbacks.
 
-* Determines which tools are available
-* Injects tool outputs as immutable context
-* Enforces execution order and retries
-* Handles failures and fallbacks
-
-This separation ensures that agents remain **pure reasoning components**, while the orchestrator enforces system policy.
+This separation ensures that the planner remains a **pure reasoning component** (no tool calls), while the executor and orchestrator enforce system policy and invoke tools.
 
 ---
 
@@ -386,4 +441,77 @@ Future versions may introduce additional tools, such as:
 * Domain-specific calculators
 
 All future tools would follow the same capability-gated, orchestrator-controlled model demonstrated in this project.
+
+---
+
+## 13. Frontend
+
+All documentation lives in the project root. This section summarizes the frontend (React + Vite in `frontend/`).
+
+### 13.1 Quick Start
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Backend must be running on `http://localhost:8000`. Vite proxies `/agent` to it.
+
+### 13.2 Primary Surface: ChatPanel
+
+The **only** interactive user surface is **ChatPanel**. It:
+
+- Maintains conversation state (messages, financial context) and sends the current context with each message.
+- Renders **only** what the backend returns: assistant text and `ui_blocks` (charts, tables, editors). No hardcoded assistant messages (e.g. “I’m here to help”).
+- Handles `message_type`: `assistant`, `clarifying_question`, `scenario_result`, `error`.
+
+Users type messages (e.g. “Analyze my finances”, “What if I buy a car?”, “+1500 per month in transport”) and optionally use inline editors when the backend returns `ui_blocks` with `editorType: financial_input`, `expense_categories`, or `asset_allocation`.
+
+### 13.3 Component Responsibilities
+
+| Component | Responsibility |
+|-----------|----------------|
+| **ChatPanel** | Main page. Message list, input, rendering of `ui_blocks` (SavingsGauge, ExpenseChart, AssetAllocationChart, analysis table, FinancialInputEditor, ExpenseCategoryEditor, AssetAllocationEditor). Submits via `chatAgent()` with current financial input. |
+| **FinancialInputEditor** | Inline editor for income, expenses, savings; used when backend returns `editorType: financial_input`. |
+| **ExpenseCategoryEditor** | Inline editor for expense categories; used when backend asks for delta/categories. |
+| **AssetAllocationEditor** | Inline editor for asset allocation; used when backend returns `editorType: asset_allocation`. |
+| **SavingsGauge** | Renders savings rate from `ui_blocks` chart data. |
+| **ExpenseChart** | Renders income/expense allocation from `ui_blocks`. |
+| **AssetAllocationChart** | Renders asset allocation pie from `ui_blocks`. |
+| **RiskCard** | Renders analysis rows (dimension, risk_level, reason) from `ui_blocks` table. |
+| **Dashboard** | Re-exports or wraps ChatPanel. |
+| **InputPanel** | Manual entry for income/expenses; used where standalone input is needed (e.g. presets, CSV). |
+| **CSVUpload** | Drag-and-drop or file select for CSV; parses via `csvParser`. |
+| **ExampleDataSelector** | Presets (Struggling, Moderate, Comfortable). |
+| **SummaryBanner** | Displays income, expenses, savings rate, status badge. |
+| **ValidationBadge** | Valid/invalid badge for AI output. |
+| **Tooltip** | Hover tooltip for rule explanations. |
+
+### 13.4 Services & Utils
+
+| File | Responsibility |
+|------|----------------|
+| **agentApi.ts** | `chatAgent(message, conversationId?, input?, capabilities?)` POST to `/agent/chat`. Types: `AgentInput`, `ChatResponse` (assistant_message, run_id, analysis, education, trace, message_type, ui_blocks), `UIBlock`. |
+| **csvParser.ts** | Parse CSV, detect income/expense columns, derive monthly averages. |
+| **mappings.ts** | `DIMENSION_TO_CHART`, `RISK_COLORS`, `DIMENSION_LABELS` for RiskCard and chart highlighting. |
+
+### 13.5 Supported CSV Formats (Frontend)
+
+- **Format A (Monthly):** columns `month`, `income`, `expenses`.
+- **Format B (Categorized):** columns `month`, `category`, `amount`; income entered manually.
+- **Format C (Transaction log):** columns `month`, `type`, `amount`, `category` with `type` = income/expense.
+
+Templates and “Generate fake sample data” are available in the UI.
+
+### 13.6 Tech Stack & Configuration
+
+- **Stack:** Vite, React, TypeScript, Tailwind v4, Recharts, Framer Motion, Axios, Lucide React.
+- **Vite proxy:** `/agent` → `http://localhost:8000` in dev (avoids CORS).
+- **VITE_API_URL:** Optional; empty uses same-origin + proxy in dev.
+
+### 13.7 UI/UX Notes
+
+- **Background & cards:** Gradient `from-slate-50 to-slate-100`; cards use `border-slate-200`, `shadow-md`.
+- **Colors:** Primary Indigo; status Emerald (healthy), Amber (moderate), Rose (risk).
+- **Charts:** Savings Gauge (gradient arc emerald/amber/rose); Income Allocation Donut (expenses rose, savings emerald); Trend Chart with rounded bars / AreaChart when monthly data available.
+- **Rationale:** Fintech polish, clear hierarchy (Input → Insight → Visualization → Reflection), cohesive palette for demos.
 

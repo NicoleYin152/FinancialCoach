@@ -3,7 +3,7 @@
 from typing import Dict, List
 
 from tools.rules import RuleFinding
-from tools.tool_protocol import ToolResult
+from tools.schemas import ToolResult
 
 
 _EDUCATION_MAP: Dict[str, str] = {

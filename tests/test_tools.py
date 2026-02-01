@@ -74,7 +74,7 @@ def test_liquidity_tool_low_coverage():
     assert tool.applicable(ctx)
     results = tool.run(ctx)
     assert len(results) >= 1
-    assert "months_coverage" in results[0].supporting_metrics
+    assert "months_coverage" in results[0].metrics
 
 
 def test_liquidity_tool_not_applicable_without_savings():

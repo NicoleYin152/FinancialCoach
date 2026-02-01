@@ -23,12 +23,78 @@ def test_valid_request():
     )
     assert response.status_code == 200
     data = response.json()
+    assert "run_id" in data
+    assert data["run_id"] is not None
     assert "analysis" in data
     assert "education" in data
     assert "generation" in data
     assert "validation" in data
     assert "errors" in data
     assert "trace" in data
+
+
+def test_replay_endpoint():
+    """Replay endpoint returns stored RunMemory for valid run_id."""
+    run_response = client.post(
+        "/agent/run",
+        json={
+            "input": {"monthly_income": 8000, "monthly_expenses": 5500},
+            "capabilities": {"llm": False},
+        },
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json().get("run_id")
+    assert run_id is not None
+
+    replay_response = client.get(f"/agent/replay/{run_id}")
+    assert replay_response.status_code == 200
+    memory = replay_response.json()
+    assert memory["run_id"] == run_id
+    assert "tools_selected" in memory
+    assert "tool_results" in memory
+    assert "context_snapshot" in memory
+    assert "timestamp" in memory
+
+
+def test_chat_endpoint():
+    """POST /agent/chat returns conversation_id and assistant_message."""
+    response = client.post(
+        "/agent/chat",
+        json={
+            "message": "I make 8000 and spend 5500",
+            "input": {"monthly_income": 8000, "monthly_expenses": 5500},
+            "capabilities": {"llm": False, "agent": False},
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "conversation_id" in data
+    assert "assistant_message" in data
+    assert data["run_id"] is not None
+    assert "trace" in data
+
+
+def test_chat_endpoint_no_input():
+    """POST /agent/chat without input asks for clarification."""
+    response = client.post(
+        "/agent/chat",
+        json={
+            "message": "Can you analyze my finances?",
+            "capabilities": {"llm": False, "agent": False},
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "conversation_id" in data
+    assert "assistant_message" in data
+    assert data["run_id"] is None
+    assert "income" in data["assistant_message"].lower() or "expense" in data["assistant_message"].lower()
+
+
+def test_replay_endpoint_404():
+    """Replay endpoint returns 404 for unknown run_id."""
+    response = client.get("/agent/replay/nonexistent_run_id_12345")
+    assert response.status_code == 404
 
 
 def test_missing_required_fields():

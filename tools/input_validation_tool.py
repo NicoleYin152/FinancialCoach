@@ -1,7 +1,7 @@
 """Input validation tool: basic input sanity checks."""
 
 from tools.context import FinancialContext
-from tools.tool_protocol import ToolResult
+from tools.schemas import ToolResult
 
 
 class InputValidationTool:
@@ -19,19 +19,21 @@ class InputValidationTool:
         if ctx.income <= 0:
             results.append(
                 ToolResult(
+                    tool_name=self.name,
                     dimension=self.dimension,
                     severity="invalid",
                     reason="Zero or negative income",
-                    supporting_metrics={"income": ctx.income},
+                    metrics={"income": ctx.income},
                 )
             )
         if ctx.total_expenses < 0:
             results.append(
                 ToolResult(
+                    tool_name=self.name,
                     dimension=self.dimension,
                     severity="invalid",
                     reason="Negative values not allowed",
-                    supporting_metrics={"total_expenses": ctx.total_expenses},
+                    metrics={"total_expenses": ctx.total_expenses},
                 )
             )
 

@@ -33,9 +33,12 @@ export interface TraceInfo {
   metrics_computed?: string[];
   context_snapshot?: Record<string, unknown>;
   phases?: string[];
+  planner_decision?: string;
+  action_taken?: string;
 }
 
 export interface AgentResponse {
+  run_id?: string | null;
   analysis: AnalysisItem[];
   education: Record<string, string>;
   generation: string;
@@ -49,6 +52,52 @@ const client = axios.create({
   headers: { "Content-Type": "application/json" },
   timeout: 30000,
 });
+
+export interface ChatRequest {
+  conversation_id?: string | null;
+  message: string;
+  input?: AgentInput | null;
+  capabilities?: { llm?: boolean; agent?: boolean };
+}
+
+export type ChatMessageType =
+  | "assistant"
+  | "clarifying_question"
+  | "scenario_result"
+  | "error";
+
+export type UIBlock =
+  | { type: "text"; content: string }
+  | { type: "clarifying_question"; content: string }
+  | { type: "chart"; chartType: string; data: Record<string, unknown> }
+  | { type: "table"; schema: string; rows: unknown[] }
+  | {
+      type: "editor";
+      editorType: "financial_input" | "expense_categories" | "asset_allocation";
+      value: unknown;
+    };
+
+export interface ChatResponse {
+  conversation_id: string;
+  assistant_message: string;
+  run_id: string | null;
+  analysis: AnalysisItem[];
+  education: Record<string, string>;
+  trace: TraceInfo;
+  message_type?: ChatMessageType;
+  ui_blocks?: UIBlock[];
+}
+
+export async function chatAgent(req: ChatRequest): Promise<ChatResponse> {
+  const payload: Record<string, unknown> = {
+    message: req.message,
+    capabilities: req.capabilities ?? { llm: false, agent: false },
+  };
+  if (req.conversation_id) payload.conversation_id = req.conversation_id;
+  if (req.input) payload.input = req.input;
+  const { data } = await client.post<ChatResponse>("/agent/chat", payload);
+  return data;
+}
 
 export async function runAgent(input: AgentInput): Promise<AgentResponse> {
   const payload: Record<string, unknown> = {

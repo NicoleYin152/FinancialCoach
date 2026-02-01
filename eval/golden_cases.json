@@ -1,0 +1,69 @@
+[
+  {
+    "name": "basic_healthy",
+    "input": {
+      "monthly_income": 8000,
+      "monthly_expenses": 4800
+    },
+    "expected_tools_executed": ["input_validation", "expense_ratio"],
+    "expected_severities": [],
+    "expected_metrics_ranges": {
+      "savings_rate": [0.35, 0.45],
+      "expense_ratio": [0.55, 0.65]
+    }
+  },
+  {
+    "name": "high_expense_ratio",
+    "input": {
+      "monthly_income": 5000,
+      "monthly_expenses": 4600
+    },
+    "expected_tools_executed": ["input_validation", "expense_ratio"],
+    "expected_severities": ["high"],
+    "expected_metrics_ranges": {
+      "savings_rate": [0.0, 0.15],
+      "expense_ratio": [0.85, 1.0]
+    }
+  },
+  {
+    "name": "expense_concentration",
+    "input": {
+      "monthly_income": 10000,
+      "expense_categories": [
+        {"category": "Housing", "amount": 3500},
+        {"category": "Food", "amount": 800},
+        {"category": "Other", "amount": 700}
+      ]
+    },
+    "expected_tools_executed": ["input_validation", "expense_ratio", "expense_concentration"],
+    "expected_severities": ["high"],
+    "expected_metrics_ranges": {}
+  },
+  {
+    "name": "asset_concentration",
+    "input": {
+      "monthly_income": 8000,
+      "monthly_expenses": 5500,
+      "asset_allocation": [
+        {"asset_class": "Stocks", "allocation_pct": 95},
+        {"asset_class": "Bonds", "allocation_pct": 5}
+      ]
+    },
+    "expected_tools_executed": ["input_validation", "expense_ratio", "asset_concentration"],
+    "expected_severities": ["high"],
+    "expected_metrics_ranges": {}
+  },
+  {
+    "name": "liquidity_low",
+    "input": {
+      "monthly_income": 6000,
+      "monthly_expenses": 5000,
+      "current_savings": 3000
+    },
+    "expected_tools_executed": ["input_validation", "expense_ratio", "liquidity"],
+    "expected_severities": ["high"],
+    "expected_metrics_ranges": {
+      "months_coverage": [0.5, 1.0]
+    }
+  }
+]

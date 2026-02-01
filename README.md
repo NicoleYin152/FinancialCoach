@@ -175,3 +175,12 @@ See [DOCUMENTATION.md](DOCUMENTATION.md) for the full Agent-Oriented Architectur
 - [x] Deterministic tool execution
 - [x] Trace includes planner_decision and clarification_attempt
 - [x] Manual chat tests pass
+
+
+---
+
+## Demo
+
+https://youtu.be/sZ03GkgboXI
+
+Demo functionality checklist can be found in VERIFICATION_REPORT.md.
